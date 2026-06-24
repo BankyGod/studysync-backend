@@ -45,9 +45,17 @@ The app is ready for platforms like Render, Railway, or Heroku:
 
 - **Start command:** `npm start` → runs `node src/index.js`
 - **Port:** Set automatically via `PORT` env var (falls back to `3000` locally)
-- **Required env vars:** `MONGODB_URI`, `JWT_SECRET`, `CORS_ORIGIN` (your frontend URL)
+- **Required env vars on Render:**
+  - `MONGODB_URI` — your Atlas connection string (include `/studysync` database name)
+  - `JWT_SECRET` — a long random secret
+  - `CORS_ORIGIN` — your deployed frontend URL (e.g. `https://your-app.vercel.app`)
 
-On your host, set `PORT` if the platform does not inject it automatically (most PaaS providers do).
+Render does **not** read your local `.env` file. Add these under **Environment** in the Render dashboard, then redeploy.
+
+**Render settings:**
+- Root directory: leave blank if `package.json` is at repo root, or set to `backend` if the repo root is the parent folder
+- Build command: `npm install`
+- Start command: `npm start`
 
 ## Scripts
 

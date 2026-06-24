@@ -7,7 +7,7 @@ import { initSocket } from './socket.js'
 try {
   await initDb()
 } catch (error) {
-  console.error(`Failed to connect to MongoDB (${config.mongoUri})`)
+  console.error('Failed to connect to MongoDB')
   console.error(error.message)
   process.exit(1)
 }
