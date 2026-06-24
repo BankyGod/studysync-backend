@@ -1,0 +1,638 @@
+openapi: 3.0.3
+info:
+  title: StudySync API
+  description: Backend API for the StudySync collaborative learning platform. Reliability score endpoints are not included.
+  version: 1.0.0
+servers:
+  - url: http://localhost:3000/api
+    description: Local development
+tags:
+  - name: Auth
+  - name: Onboarding
+  - name: Users
+  - name: Matching
+  - name: Workspaces
+  - name: Admin
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              type: array
+              items:
+                type: object
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+        role:
+          type: string
+          enum: [student, instructor]
+        studentId:
+          type: string
+        university:
+          type: string
+        program:
+          type: string
+        level:
+          type: string
+          enum: ['100', '200', '300', '400']
+        phone:
+          type: string
+    AuthResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        user:
+          $ref: '#/components/schemas/User'
+    RegisterRequest:
+      type: object
+      required: [firstName, lastName, studentId, email, university, program, level, role, password]
+      properties:
+        firstName:
+          type: string
+        lastName:
+          type: string
+        studentId:
+          type: string
+        email:
+          type: string
+        phone:
+          type: string
+        university:
+          type: string
+        program:
+          type: string
+        level:
+          type: string
+          enum: ['100', '200', '300', '400']
+        role:
+          type: string
+          enum: [student, instructor]
+        password:
+          type: string
+          minLength: 8
+        agreeToTerms:
+          type: boolean
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+    OnboardingProfile:
+      type: object
+      properties:
+        learningStyle:
+          type: string
+          enum: [visual, auditory, reading, kinesthetic]
+        availability:
+          type: array
+          maxItems: 5
+          items:
+            type: string
+            example: Mon-8 AM
+        courses:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              subject:
+                type: string
+              courseNumber:
+                type: string
+        studyPreferences:
+          type: object
+          properties:
+            groupSize:
+              type: string
+              enum: [small, medium, large]
+            timeCommitment:
+              type: string
+              enum: [low, medium, high]
+            difficulty:
+              type: string
+              enum: [beginner, intermediate, advanced]
+        savedAt:
+          type: string
+          format: date-time
+    UserDisplayProfile:
+      type: object
+      properties:
+        fullName:
+          type: string
+        studentRole:
+          type: string
+        primaryUniversity:
+          type: string
+        secondaryUniversity:
+          type: string
+        email:
+          type: string
+        location:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+    Task:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        dueDate:
+          type: string
+          format: date
+        completedAt:
+          type: string
+          format: date
+        variant:
+          type: string
+          enum: [default, highlight, completed]
+        assignee:
+          type: object
+          properties:
+            id:
+              type: string
+            initials:
+              type: string
+            name:
+              type: string
+            color:
+              type: string
+        createdAt:
+          type: string
+          format: date-time
+    KanbanBoard:
+      type: object
+      properties:
+        todo:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+        in_progress:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+        completed:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+paths:
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '409':
+          description: Email or student ID already exists
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Sign in
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          description: Invalid credentials
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Current user
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+  /onboarding/profile:
+    get:
+      tags: [Onboarding]
+      summary: Get onboarding profile
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OnboardingProfile'
+        '404':
+          description: Not started
+    post:
+      tags: [Onboarding]
+      summary: Save onboarding profile
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OnboardingProfile'
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OnboardingProfile'
+  /users/me/profile:
+    get:
+      tags: [Users]
+      summary: Get display profile
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserDisplayProfile'
+    put:
+      tags: [Users]
+      summary: Update display profile
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserDisplayProfile'
+      responses:
+        '200':
+          description: Updated
+  /users/me/groups:
+    get:
+      tags: [Users]
+      summary: List user's study groups (dashboard)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+  /matching/find-group:
+    post:
+      tags: [Matching]
+      summary: Start matching for a study group
+      security:
+        - bearerAuth: []
+      responses:
+        '202':
+          description: Matching job started or completed
+  /matching/jobs/{jobId}:
+    get:
+      tags: [Matching]
+      summary: Poll matching job progress
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Job status
+  /matching/course/{courseCode}:
+    get:
+      tags: [Matching]
+      summary: List groups for a course
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: courseCode
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+  /workspaces/{groupId}:
+    get:
+      tags: [Workspaces]
+      summary: Workspace metadata and members
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+  /workspaces/{groupId}/tasks:
+    get:
+      tags: [Workspaces]
+      summary: Kanban board
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KanbanBoard'
+    post:
+      tags: [Workspaces]
+      summary: Create task
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title:
+                  type: string
+                dueDate:
+                  type: string
+                assigneeId:
+                  type: string
+      responses:
+        '201':
+          description: Created
+  /workspaces/{groupId}/tasks/{taskId}:
+    patch:
+      tags: [Workspaces]
+      summary: Update or move task
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Updated
+    delete:
+      tags: [Workspaces]
+      summary: Delete task
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Deleted
+  /workspaces/{groupId}/messages:
+    get:
+      tags: [Workspaces]
+      summary: List chat messages
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+    post:
+      tags: [Workspaces]
+      summary: Send message (text, attachment, or voice)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                type:
+                  type: string
+                  enum: [text]
+                content:
+                  type: string
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                type:
+                  type: string
+                  enum: [attachment, voice]
+                file:
+                  type: string
+                  format: binary
+                durationSec:
+                  type: integer
+      responses:
+        '201':
+          description: Created
+  /workspaces/{groupId}/files:
+    get:
+      tags: [Workspaces]
+      summary: List shared files
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+    post:
+      tags: [Workspaces]
+      summary: Upload shared file
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '201':
+          description: Uploaded
+  /workspaces/{groupId}/sessions:
+    get:
+      tags: [Workspaces]
+      summary: List scheduled sessions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+    post:
+      tags: [Workspaces]
+      summary: Schedule a session
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '201':
+          description: Created
+  /admin/cohorts:
+    get:
+      tags: [Admin]
+      summary: List cohorts
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+    post:
+      tags: [Admin]
+      summary: Create cohort
+      security:
+        - bearerAuth: []
+      responses:
+        '201':
+          description: Created
+  /admin/seed:
+    post:
+      tags: [Admin]
+      summary: Seed cohort students (admin only)
+      security:
+        - bearerAuth: []
+      responses:
+        '201':
+          description: Created
+  /admin/matching/run:
+    post:
+      tags: [Admin]
+      summary: Run batch matching
+      security:
+        - bearerAuth: []
+      responses:
+        '202':
+          description: Started
+  /admin/groups:
+    get:
+      tags: [Admin]
+      summary: List all groups
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+  /admin/students:
+    get:
+      tags: [Admin]
+      summary: List students
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: OK
