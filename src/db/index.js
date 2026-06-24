@@ -7,6 +7,7 @@ export * from './models.js'
 
 export async function initDb() {
   await mongoose.connect(config.mongoUri)
+  console.log('MongoDB connected')
   return mongoose.connection
 }
 

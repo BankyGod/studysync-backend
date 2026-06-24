@@ -29,7 +29,7 @@ Copy `.env.example` to `.env` and adjust if needed:
 - `PORT` — default `3000`
 - `JWT_SECRET` — change in production
 - `CORS_ORIGIN` — default `http://localhost:5173`
-- `MONGODB_URI` — default `mongodb://127.0.0.1:27017/studysync`
+- `MONGODB_URI` — MongoDB connection string (or `MONGO_URI`; local default `mongodb://127.0.0.1:27017/studysync`)
 - `UPLOADS_DIR` — file upload storage
 
 ## Typical flow (via Swagger or frontend)
