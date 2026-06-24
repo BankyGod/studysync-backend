@@ -39,6 +39,16 @@ Copy `.env.example` to `.env` and adjust if needed:
 3. `POST /api/matching/find-group` — get matched into a pod
 4. Use `/api/workspaces/{groupId}/*` for tasks, chat, files, sessions
 
+## Production
+
+The app is ready for platforms like Render, Railway, or Heroku:
+
+- **Start command:** `npm start` → runs `node src/index.js`
+- **Port:** Set automatically via `PORT` env var (falls back to `3000` locally)
+- **Required env vars:** `MONGODB_URI`, `JWT_SECRET`, `CORS_ORIGIN` (your frontend URL)
+
+On your host, set `PORT` if the platform does not inject it automatically (most PaaS providers do).
+
 ## Scripts
 
 - `npm run dev` — start with auto-reload (`node --watch`)

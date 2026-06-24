@@ -16,9 +16,10 @@ const app = createApp()
 const server = http.createServer(app)
 initSocket(server, app)
 
-server.listen(config.port, () => {
-  console.log(`StudySync API running on http://localhost:${config.port}`)
+const host = process.env.HOST || '0.0.0.0'
+
+server.listen(config.port, host, () => {
+  console.log(`StudySync API running on port ${config.port}`)
   console.log(`Swagger UI: http://localhost:${config.port}/api-docs`)
   console.log(`OpenAPI JSON: http://localhost:${config.port}/api-docs.json`)
-  console.log(`MongoDB: ${config.mongoUri}`)
 })
