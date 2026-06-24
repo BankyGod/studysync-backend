@@ -9,12 +9,36 @@ const backendRoot = path.resolve(__dirname, '..')
 
 const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true'
 
+const MONGO_ENV_KEYS = ['MONGODB_URI', 'MONGO_URI', 'MONGODB_URL', 'DATABASE_URL']
+
+function readMongoUri() {
+  for (const key of MONGO_ENV_KEYS) {
+    const value = process.env[key]?.trim()
+    if (value) {
+      return { uri: value, key }
+    }
+  }
+  return null
+}
+
+const mongoFromEnv = readMongoUri()
 const mongoUri =
-  process.env.MONGODB_URI ||
-  process.env.MONGO_URI ||
-  (isProduction ? null : 'mongodb://127.0.0.1:27017/studysync')
+  mongoFromEnv?.uri || (isProduction ? null : 'mongodb://127.0.0.1:27017/studysync')
 
 if (!mongoUri) {
+  const relatedKeys = Object.keys(process.env).filter((key) =>
+    /mongo|database|db_uri/i.test(key),
+  )
+
+  console.error('MongoDB connection string not found at runtime.')
+  console.error(`Expected one of: ${MONGO_ENV_KEYS.join(', ')}`)
+  console.error(
+    relatedKeys.length
+      ? `Similar env keys present: ${relatedKeys.join(', ')}`
+      : 'No Mongo-related env keys detected on this service.',
+  )
+  console.error('Add MONGODB_URI under Render → your Web Service → Environment → Save Changes.')
+
   throw new Error(
     'MONGODB_URI (or MONGO_URI) is required. Set it in your hosting provider environment variables.',
   )
