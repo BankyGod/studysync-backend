@@ -5,6 +5,7 @@ import {
   OnboardingProfile,
   MatchingJob,
   User,
+  UserCourse,
 } from '../db/models.js'
 import {
   buildGroupTitle,
@@ -15,7 +16,7 @@ import {
   pickAvatarColor,
 } from '../utils/helpers.js'
 import { loadProfile } from '../routes/onboarding.js'
-import { conflict, notFound, validationError } from '../utils/errors.js'
+import { alreadyInGroup, notFound, validationError } from '../utils/errors.js'
 
 const MATCHING_STEPS = ['course', 'preferences', 'compatibility', 'searching', 'finalizing']
 const STEP_PROGRESS = [20, 40, 65, 85, 100]
@@ -47,7 +48,7 @@ export async function buildMatchPayload(group, userId) {
     color: m.avatar_color,
   }))
 
-  const metrics = await computeMatchMetrics(userId, group.id)
+  const metrics = await computeMatchMetrics(userId, group.id, null)
 
   return {
     groupId: group.slug,
@@ -58,9 +59,9 @@ export async function buildMatchPayload(group, userId) {
   }
 }
 
-async function computeMatchMetrics(userId, groupId) {
+async function computeMatchMetrics(userId, groupId, payloadAvailability) {
   const userProfile = await OnboardingProfile.findOne({ user_id: userId }).lean()
-  const userSlots = userProfile ? JSON.parse(userProfile.availability) : []
+  const userSlots = payloadAvailability ?? (userProfile ? JSON.parse(userProfile.availability) : [])
 
   const otherMembers = await GroupMember.find({ group_id: groupId, user_id: { $ne: userId } }).lean()
   const profiles = await OnboardingProfile.find({
@@ -81,11 +82,19 @@ async function computeMatchMetrics(userId, groupId) {
   return { scheduleMatch, learningStyleMatch, avgGrades }
 }
 
+async function countOtherEnrolledStudents(subject, courseNumber, userId) {
+  return UserCourse.countDocuments({
+    subject: subject.trim(),
+    course_number: courseNumber.trim(),
+    user_id: { $ne: userId },
+  })
+}
+
 async function findBestGroup(subject, courseNumber, groupSize) {
   const limit = groupSizeLimit(groupSize)
 
   const groups = await StudyGroup.aggregate([
-    { $match: { subject, course_number: courseNumber } },
+    { $match: { subject: subject.trim(), course_number: courseNumber.trim() } },
     {
       $lookup: {
         from: 'group_members',
@@ -104,7 +113,8 @@ async function findBestGroup(subject, courseNumber, groupSize) {
 }
 
 async function createGroup(subject, courseNumber) {
-  const existing = await StudyGroup.findOne({ slug: courseToSlug(subject, courseNumber) }).lean()
+  const slug = courseToSlug(subject, courseNumber)
+  const existing = await StudyGroup.findOne({ slug }).lean()
   if (existing) return existing
 
   const now = new Date().toISOString()
@@ -112,10 +122,10 @@ async function createGroup(subject, courseNumber) {
 
   await StudyGroup.create({
     id,
-    slug: courseToSlug(subject, courseNumber),
-    title: buildGroupTitle(subject, courseNumber),
-    subject,
-    course_number: courseNumber,
+    slug,
+    title: buildGroupTitle(subject.trim(), courseNumber.trim()),
+    subject: subject.trim(),
+    course_number: courseNumber.trim(),
     created_at: now,
   })
 
@@ -142,8 +152,8 @@ export async function getUserGroupForCourse(userId, subject, courseNumber) {
   const groupIds = memberships.map((m) => m.group_id)
   const group = await StudyGroup.findOne({
     id: { $in: groupIds },
-    subject,
-    course_number: courseNumber,
+    subject: subject.trim(),
+    course_number: courseNumber.trim(),
   }).lean()
 
   if (!group) return null
@@ -155,8 +165,8 @@ export async function getUserGroupForCourse(userId, subject, courseNumber) {
 export async function assertNotInCourseGroup(userId, subject, courseNumber) {
   const existing = await getUserGroupForCourse(userId, subject, courseNumber)
   if (existing) {
-    throw conflict(
-      `You are already in a study group for ${formatCourseLabel(subject, courseNumber)}. Leave your current group before matching or joining another.`,
+    throw alreadyInGroup(
+      `You are already in a study group for ${formatCourseLabel(subject, courseNumber)}.`,
     )
   }
 }
@@ -165,6 +175,16 @@ async function assertGroupHasSpace(groupId, groupSize = 'medium') {
   const memberCount = await GroupMember.countDocuments({ group_id: groupId })
   if (memberCount >= groupSizeLimit(groupSize)) {
     throw validationError('This study group is full')
+  }
+}
+
+function buildWaitingResult(jobId) {
+  return {
+    jobId,
+    status: 'waiting',
+    errorCode: 'NO_ENROLLED_STUDENTS',
+    progress: 20,
+    currentStep: 'course',
   }
 }
 
@@ -207,21 +227,48 @@ export async function runMatchingForUser(user, payload, io) {
   const profile = await loadProfile(user.id)
   const course = payload.course ?? profile?.courses?.[0]
 
-  if (!course?.subject || !course?.courseNumber) {
-    throw new Error('No course available for matching')
+  if (!course?.subject?.trim() || !course?.courseNumber?.trim()) {
+    throw validationError('course with subject and courseNumber is required')
   }
 
-  await assertNotInCourseGroup(user.id, course.subject, course.courseNumber)
+  const subject = course.subject.trim()
+  const courseNumber = course.courseNumber.trim()
+
+  await assertNotInCourseGroup(user.id, subject, courseNumber)
 
   const studyPreferences = payload.studyPreferences ?? profile?.studyPreferences ?? { groupSize: 'medium' }
   const jobId = uuid()
   const now = new Date().toISOString()
 
+  const otherEnrolled = await countOtherEnrolledStudents(subject, courseNumber, user.id)
+  if (otherEnrolled === 0) {
+    await MatchingJob.create({
+      id: jobId,
+      user_id: user.id,
+      course_subject: subject,
+      course_number: courseNumber,
+      status: 'waiting',
+      progress: 20,
+      current_step: 'course',
+      error_code: 'NO_ENROLLED_STUDENTS',
+      created_at: now,
+    })
+
+    const waiting = buildWaitingResult(jobId)
+    if (io) {
+      io.to(`user:${user.id}`).emit('matching:progress', {
+        ...waiting,
+        status: 'waiting',
+      })
+    }
+    return waiting
+  }
+
   await MatchingJob.create({
     id: jobId,
     user_id: user.id,
-    course_subject: course.subject,
-    course_number: course.courseNumber,
+    course_subject: subject,
+    course_number: courseNumber,
     status: 'running',
     progress: 0,
     current_step: 'course',
@@ -252,9 +299,9 @@ export async function runMatchingForUser(user, payload, io) {
       if (step >= MATCHING_STEPS.length) {
         clearInterval(interval)
 
-        let group = await findBestGroup(course.subject, course.courseNumber, studyPreferences.groupSize)
+        let group = await findBestGroup(subject, courseNumber, studyPreferences.groupSize)
         if (!group) {
-          group = await createGroup(course.subject, course.courseNumber)
+          group = await createGroup(subject, courseNumber)
         }
 
         await assertGroupHasSpace(group.id, studyPreferences.groupSize)
@@ -297,6 +344,11 @@ export async function getMatchingJob(jobId, userId) {
     match: null,
   }
 
+  if (job.status === 'waiting') {
+    result.errorCode = job.error_code || 'NO_ENROLLED_STUDENTS'
+    return result
+  }
+
   if (job.status === 'completed' && job.result_group_id) {
     const group = await StudyGroup.findOne({ id: job.result_group_id }).lean()
     if (group) {
@@ -306,17 +358,15 @@ export async function getMatchingJob(jobId, userId) {
 
   if (job.status === 'failed') {
     result.error = job.error_message
+    result.errorCode = job.error_code
   }
 
   return result
 }
 
 export async function listCourseGroups(courseCode) {
-  const group = await StudyGroup.findOne({ slug: courseCode }).lean()
-
-  const groups = group
-    ? [group]
-    : await StudyGroup.find({ slug: { $regex: courseCode, $options: 'i' } }).lean()
+  const slug = courseCode.toLowerCase().trim()
+  const groups = await StudyGroup.find({ slug }).lean()
 
   return Promise.all(
     groups.map(async (g) => {
@@ -330,4 +380,13 @@ export async function listCourseGroups(courseCode) {
       }
     }),
   )
+}
+
+export async function usersShareGroup(userIdA, userIdB) {
+  const membershipsA = await GroupMember.find({ user_id: userIdA }).lean()
+  if (!membershipsA.length) return false
+
+  const groupIds = membershipsA.map((m) => m.group_id)
+  const shared = await GroupMember.findOne({ user_id: userIdB, group_id: { $in: groupIds } }).lean()
+  return Boolean(shared)
 }

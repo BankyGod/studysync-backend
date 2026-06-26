@@ -324,6 +324,23 @@ paths:
       responses:
         '200':
           description: OK
+  /users/{userId}/profile:
+    get:
+      tags: [Users]
+      summary: View another member's profile (shared group required)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Public pod profile (no email for other users)
+        '403':
+          description: Not in a shared study group
   /matching/find-group:
     post:
       tags: [Matching]

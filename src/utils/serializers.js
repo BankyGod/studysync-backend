@@ -14,10 +14,13 @@ export function formatUser(row) {
 }
 
 export function formatMember(row) {
-  return {
+  const member = {
     id: row.user_id ?? row.id,
     initials: row.initials,
-    name: row.display_name ?? `${row.first_name} ${row.last_name}`.trim(),
+    name: row.display_name ?? `${row.first_name ?? ''} ${row.last_name ?? ''}`.trim(),
     color: row.avatar_color,
   }
+  const major = row.major ?? row.program
+  if (major) member.major = major
+  return member
 }

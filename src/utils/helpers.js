@@ -12,7 +12,7 @@ export const AVATAR_COLORS = [
 export const GROUP_ACCENTS = ['blue', 'green', 'purple', 'amber']
 
 export function courseToSlug(subject, courseNumber) {
-  return `${subject} ${courseNumber}`.toLowerCase().replace(/\s+/g, '-')
+  return `${String(subject).trim()} ${String(courseNumber).trim()}`.toLowerCase().replace(/\s+/g, '-')
 }
 
 export function buildGroupTitle(subject, courseNumber) {

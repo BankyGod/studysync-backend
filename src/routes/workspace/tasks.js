@@ -181,8 +181,7 @@ router.delete('/:taskId', async (req, res, next) => {
 
     const io = req.app.get('io')
     io?.to(`workspace:${req.group.slug}`).emit('task:deleted', {
-      groupId: req.group.slug,
-      taskId: req.params.taskId,
+      id: req.params.taskId,
     })
 
     res.status(204).send()

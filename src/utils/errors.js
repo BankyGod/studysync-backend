@@ -26,3 +26,7 @@ export function unauthorized(message = 'Unauthorized') {
 export function conflict(message) {
   return new AppError(409, 'CONFLICT', message)
 }
+
+export function alreadyInGroup(message = 'You are already in a study group for this course.') {
+  return new AppError(409, 'ALREADY_IN_GROUP', message)
+}

@@ -22,6 +22,7 @@ router.get('/', async (req, res, next) => {
         avatar_color: m.avatar_color,
         first_name: u?.first_name,
         last_name: u?.last_name,
+        program: u?.program,
       })
     })
 

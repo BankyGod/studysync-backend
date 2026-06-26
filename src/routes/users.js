@@ -1,9 +1,10 @@
 import { Router } from 'express'
 import { UserProfile, StudyGroup, GroupMember, User, Task } from '../db/models.js'
 import { authRequired } from '../middleware/auth.js'
-import { validationError } from '../utils/errors.js'
+import { forbidden, notFound, validationError } from '../utils/errors.js'
 import { formatMember } from '../utils/serializers.js'
 import { pickGroupAccent } from '../utils/helpers.js'
+import { usersShareGroup } from '../services/matchingService.js'
 
 const router = Router()
 
@@ -92,6 +93,7 @@ router.get('/me/groups', async (req, res, next) => {
             avatar_color: m.avatar_color,
             first_name: u?.first_name,
             last_name: u?.last_name,
+            program: u?.program,
           })
         })
 
@@ -115,13 +117,59 @@ router.get('/me/groups', async (req, res, next) => {
           groupId: group.slug,
           title: group.title,
           progress,
-          accent: pickGroupAccent(group.id),
+          accent: pickGroupAccent(group.slug),
           members: formattedMembers,
         }
       }),
     )
 
     res.json({ groups: result })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.get('/:userId/profile', async (req, res, next) => {
+  try {
+    const { userId } = req.params
+
+    if (userId === req.user.id) {
+      const profile = await UserProfile.findOne({ user_id: userId }).lean()
+      if (!profile) {
+        throw notFound('Profile not found')
+      }
+      return res.json({
+        fullName: profile.full_name,
+        studentRole: profile.student_role,
+        primaryUniversity: profile.primary_university,
+        secondaryUniversity: profile.secondary_university ?? '',
+        email: req.user.email,
+        location: profile.location,
+      })
+    }
+
+    const sharesGroup = await usersShareGroup(req.user.id, userId)
+    if (!sharesGroup) {
+      throw forbidden('You can only view profiles of members in your study groups')
+    }
+
+    const targetUser = await User.findOne({ id: userId }).lean()
+    if (!targetUser) {
+      throw notFound('User not found')
+    }
+
+    const profile = await UserProfile.findOne({ user_id: userId }).lean()
+    if (!profile) {
+      throw notFound('Profile not found')
+    }
+
+    res.json({
+      fullName: profile.full_name,
+      studentRole: profile.student_role || targetUser.program,
+      primaryUniversity: profile.primary_university || targetUser.university,
+      secondaryUniversity: profile.secondary_university ?? '',
+      location: profile.location,
+    })
   } catch (error) {
     next(error)
   }
