@@ -44,7 +44,7 @@ function formatMessage(row, groupSlug) {
       fileName: row.file_name,
       fileSize: row.file_size,
       fileType: row.file_type,
-      downloadUrl: `/api/workspaces/${groupSlug}/messages/${row.id}/attachment`,
+      downloadUrl: `/api/workspaces/${groupSlug}/files/${row.file_id}/download`,
     }
   }
 

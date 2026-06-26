@@ -30,3 +30,11 @@ export function conflict(message) {
 export function alreadyInGroup(message = 'You are already in a study group for this course.') {
   return new AppError(409, 'ALREADY_IN_GROUP', message)
 }
+
+export function moveBackApprovalRequired(message, details = null) {
+  return new AppError(409, 'MOVE_BACK_APPROVAL_REQUIRED', message, details)
+}
+
+export function regressRequiresApproval(message, details = null) {
+  return new AppError(409, 'REGRESS_REQUIRES_APPROVAL', message, details)
+}

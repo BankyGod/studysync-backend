@@ -103,7 +103,6 @@ router.get('/:fileId/download', async (req, res, next) => {
     const file = await StoredFile.findOne({
       id: req.params.fileId,
       group_id: req.group.id,
-      purpose: 'shared',
     }).lean()
 
     if (!file || !fs.existsSync(file.storage_key)) {

@@ -11,6 +11,7 @@ import { formatMember } from '../utils/serializers.js'
 import { pickGroupAccent } from '../utils/helpers.js'
 import { usersShareGroup } from '../services/matchingService.js'
 import { avatarUrlForUser, formatProfileResponse } from '../utils/profileAvatar.js'
+import notificationsRouter from './notifications.js'
 
 const router = Router()
 const MAX_AVATAR_SIZE = 5 * 1024 * 1024
@@ -38,6 +39,8 @@ const upload = multer({
 })
 
 router.use(authRequired)
+
+router.use('/me/notifications', notificationsRouter)
 
 async function loadProfileOrFail(userId) {
   const profile = await UserProfile.findOne({ user_id: userId }).lean()

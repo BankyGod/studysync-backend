@@ -97,11 +97,14 @@ const taskSchema = new mongoose.Schema(
   {
     id: { type: String, required: true, unique: true },
     group_id: { type: String, required: true, index: true },
+    creator_id: { type: String, default: null, index: true },
     title: { type: String, required: true },
     status: { type: String, enum: ['todo', 'in_progress', 'completed'], required: true },
+    progress: { type: String, enum: ['not_started', 'started', 'done'], default: 'not_started' },
     variant: { type: String, enum: ['default', 'highlight', 'completed'], default: 'default' },
     due_date: { type: String, default: null },
     completed_at: { type: String, default: null },
+    started_at: { type: String, default: null },
     assignee_id: { type: String, default: null },
     position: { type: Number, default: 0 },
     created_at: { type: String, required: true },
@@ -109,6 +112,59 @@ const taskSchema = new mongoose.Schema(
   { collection: 'tasks', versionKey: false },
 )
 taskSchema.index({ group_id: 1, status: 1 })
+
+const taskMoveRequestSchema = new mongoose.Schema(
+  {
+    id: { type: String, required: true, unique: true },
+    task_id: { type: String, required: true, index: true },
+    group_id: { type: String, required: true, index: true },
+    requester_id: { type: String, required: true },
+    from_status: { type: String, enum: ['todo', 'in_progress', 'completed'], required: true },
+    target_status: { type: String, enum: ['todo', 'in_progress', 'completed'], required: true },
+    status: { type: String, enum: ['pending', 'approved', 'denied', 'rejected'], required: true },
+    resolved_at: { type: String, default: null },
+    resolved_by_id: { type: String, default: null },
+    created_at: { type: String, required: true },
+  },
+  { collection: 'task_move_requests', versionKey: false },
+)
+taskMoveRequestSchema.index({ task_id: 1, status: 1 })
+
+const notificationSchema = new mongoose.Schema(
+  {
+    id: { type: String, required: true, unique: true },
+    user_id: { type: String, required: true, index: true },
+    type: {
+      type: String,
+      enum: [
+        'task_assigned',
+        'task_progress_started',
+        'task_progress_done',
+        'task_completed',
+        'task_regress_requested',
+        'task_regress_approved',
+        'task_regress_rejected',
+        'task_move_back_requested',
+        'task_move_back_approved',
+        'task_move_back_denied',
+        'task_deleted',
+      ],
+      required: true,
+    },
+    title: { type: String, required: true },
+    message: { type: String, required: true },
+    group_id: { type: String, default: null },
+    group_slug: { type: String, default: null },
+    task_id: { type: String, default: null },
+    actor_id: { type: String, default: null },
+    read_at: { type: String, default: null },
+    created_at: { type: String, required: true },
+    metadata: { type: mongoose.Schema.Types.Mixed, default: null },
+  },
+  { collection: 'notifications', versionKey: false },
+)
+notificationSchema.index({ user_id: 1, created_at: -1 })
+notificationSchema.index({ user_id: 1, read_at: 1 })
 
 const storedFileSchema = new mongoose.Schema(
   {
@@ -182,6 +238,9 @@ export const Cohort = mongoose.model('Cohort', cohortSchema)
 export const StudyGroup = mongoose.model('StudyGroup', studyGroupSchema)
 export const GroupMember = mongoose.model('GroupMember', groupMemberSchema)
 export const Task = mongoose.model('Task', taskSchema)
+export const TaskMoveRequest = mongoose.model('TaskMoveRequest', taskMoveRequestSchema)
+export const TaskRegressRequest = TaskMoveRequest
+export const Notification = mongoose.model('Notification', notificationSchema)
 export const StoredFile = mongoose.model('StoredFile', storedFileSchema)
 export const Message = mongoose.model('Message', messageSchema)
 export const ScheduledSession = mongoose.model('ScheduledSession', scheduledSessionSchema)
