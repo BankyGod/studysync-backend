@@ -27,6 +27,8 @@ const userProfileSchema = new mongoose.Schema(
     primary_university: { type: String, default: '' },
     secondary_university: { type: String, default: null },
     location: { type: String, default: '' },
+    avatar_storage_key: { type: String, default: null },
+    avatar_mime_type: { type: String, default: null },
     updated_at: { type: String, required: true },
   },
   { collection: 'user_profiles', versionKey: false },

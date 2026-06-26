@@ -1,8 +1,8 @@
 import jwt from 'jsonwebtoken'
 import { config } from '../config.js'
-import { User, StudyGroup, GroupMember } from '../db/models.js'
+import { User, StudyGroup, GroupMember, UserProfile } from '../db/models.js'
 import { unauthorized, forbidden, notFound } from '../utils/errors.js'
-import { formatUser } from '../utils/serializers.js'
+import { formatUserWithAvatar } from '../utils/profileAvatar.js'
 
 export function signToken(userId) {
   return jwt.sign({ sub: userId }, config.jwtSecret, { expiresIn: config.jwtExpiresIn })
@@ -28,7 +28,7 @@ export async function authRequired(req, res, next) {
     }
 
     req.user = user
-    req.userFormatted = formatUser(user)
+    req.userFormatted = await formatUserWithAvatar(user)
     next()
   } catch (error) {
     if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {

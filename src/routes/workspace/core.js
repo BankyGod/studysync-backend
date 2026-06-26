@@ -1,8 +1,9 @@
 import { Router } from 'express'
-import { GroupMember, User } from '../../db/models.js'
+import { GroupMember, User, UserProfile } from '../../db/models.js'
 import { authRequired, requireGroupMember } from '../../middleware/auth.js'
 import { formatMember } from '../../utils/serializers.js'
 import { formatCourseLabel } from '../../utils/helpers.js'
+import { avatarUrlForUser } from '../../utils/profileAvatar.js'
 
 const router = Router({ mergeParams: true })
 
@@ -12,11 +13,13 @@ router.get('/', async (req, res, next) => {
   try {
     const members = await GroupMember.find({ group_id: req.group.id }).lean()
     const users = await User.find({ id: { $in: members.map((m) => m.user_id) } }).lean()
+    const profiles = await UserProfile.find({ user_id: { $in: members.map((m) => m.user_id) } }).lean()
     const userById = Object.fromEntries(users.map((u) => [u.id, u]))
+    const profileByUserId = Object.fromEntries(profiles.map((p) => [p.user_id, p]))
 
     const formatted = members.map((m) => {
       const u = userById[m.user_id]
-      return formatMember({
+      const member = formatMember({
         user_id: m.user_id,
         initials: m.initials,
         avatar_color: m.avatar_color,
@@ -24,6 +27,9 @@ router.get('/', async (req, res, next) => {
         last_name: u?.last_name,
         program: u?.program,
       })
+      const avatarUrl = avatarUrlForUser(m.user_id, profileByUserId[m.user_id])
+      if (avatarUrl) member.avatarUrl = avatarUrl
+      return member
     })
 
     res.json({

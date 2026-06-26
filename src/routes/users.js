@@ -1,32 +1,56 @@
+import path from 'path'
+import fs from 'fs'
 import { Router } from 'express'
+import multer from 'multer'
+import { v4 as uuid } from 'uuid'
 import { UserProfile, StudyGroup, GroupMember, User, Task } from '../db/models.js'
+import { config } from '../config.js'
 import { authRequired } from '../middleware/auth.js'
 import { forbidden, notFound, validationError } from '../utils/errors.js'
 import { formatMember } from '../utils/serializers.js'
 import { pickGroupAccent } from '../utils/helpers.js'
 import { usersShareGroup } from '../services/matchingService.js'
+import { avatarUrlForUser, formatProfileResponse } from '../utils/profileAvatar.js'
 
 const router = Router()
+const MAX_AVATAR_SIZE = 5 * 1024 * 1024
+const ALLOWED_AVATAR_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
+
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const dir = path.join(config.uploadsDir, 'avatars', req.user.id)
+      fs.mkdirSync(dir, { recursive: true })
+      cb(null, dir)
+    },
+    filename: (req, file, cb) => {
+      cb(null, `${uuid()}${path.extname(file.originalname) || '.jpg'}`)
+    },
+  }),
+  limits: { fileSize: MAX_AVATAR_SIZE },
+  fileFilter: (req, file, cb) => {
+    if (!ALLOWED_AVATAR_TYPES.has(file.mimetype)) {
+      cb(new Error('Profile photo must be JPEG, PNG, WebP, or GIF'))
+      return
+    }
+    cb(null, true)
+  },
+})
 
 router.use(authRequired)
 
+async function loadProfileOrFail(userId) {
+  const profile = await UserProfile.findOne({ user_id: userId }).lean()
+  if (!profile) {
+    throw validationError('Profile not found')
+  }
+  return profile
+}
+
 router.get('/me/profile', async (req, res, next) => {
   try {
-    const profile = await UserProfile.findOne({ user_id: req.user.id }).lean()
-
-    if (!profile) {
-      throw validationError('Profile not found')
-    }
-
-    res.json({
-      fullName: profile.full_name,
-      studentRole: profile.student_role,
-      primaryUniversity: profile.primary_university,
-      secondaryUniversity: profile.secondary_university ?? '',
-      email: req.user.email,
-      location: profile.location,
-      updatedAt: profile.updated_at,
-    })
+    const profile = await loadProfileOrFail(req.user.id)
+    res.json(formatProfileResponse(profile, req.user, { includeEmail: true }))
   } catch (error) {
     next(error)
   }
@@ -54,17 +78,91 @@ router.put('/me/profile', async (req, res, next) => {
       },
     )
 
-    const profile = await UserProfile.findOne({ user_id: req.user.id }).lean()
+    const profile = await loadProfileOrFail(req.user.id)
+    res.json(formatProfileResponse(profile, req.user, { includeEmail: true }))
+  } catch (error) {
+    next(error)
+  }
+})
 
+router.post('/me/avatar', upload.single('photo'), async (req, res, next) => {
+  try {
+    if (!req.file) {
+      throw validationError('photo file is required')
+    }
+
+    const profile = await loadProfileOrFail(req.user.id)
+
+    if (profile.avatar_storage_key && fs.existsSync(profile.avatar_storage_key)) {
+      fs.unlinkSync(profile.avatar_storage_key)
+    }
+
+    const now = new Date().toISOString()
+    await UserProfile.updateOne(
+      { user_id: req.user.id },
+      {
+        avatar_storage_key: req.file.path,
+        avatar_mime_type: req.file.mimetype,
+        updated_at: now,
+      },
+    )
+
+    const updated = await loadProfileOrFail(req.user.id)
     res.json({
-      fullName: profile.full_name,
-      studentRole: profile.student_role,
-      primaryUniversity: profile.primary_university,
-      secondaryUniversity: profile.secondary_university ?? '',
-      email: req.user.email,
-      location: profile.location,
-      updatedAt: profile.updated_at,
+      avatarUrl: avatarUrlForUser(req.user.id, updated),
+      updatedAt: now,
     })
+  } catch (error) {
+    if (req.file?.path && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path)
+    }
+    next(error)
+  }
+})
+
+router.delete('/me/avatar', async (req, res, next) => {
+  try {
+    const profile = await loadProfileOrFail(req.user.id)
+
+    if (profile.avatar_storage_key && fs.existsSync(profile.avatar_storage_key)) {
+      fs.unlinkSync(profile.avatar_storage_key)
+    }
+
+    const now = new Date().toISOString()
+    await UserProfile.updateOne(
+      { user_id: req.user.id },
+      {
+        avatar_storage_key: null,
+        avatar_mime_type: null,
+        updated_at: now,
+      },
+    )
+
+    res.status(204).send()
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.get('/:userId/avatar', async (req, res, next) => {
+  try {
+    const userId = req.params.userId === 'me' ? req.user.id : req.params.userId
+
+    if (userId !== req.user.id) {
+      const sharesGroup = await usersShareGroup(req.user.id, userId)
+      if (!sharesGroup) {
+        throw forbidden('You can only view avatars of members in your study groups')
+      }
+    }
+
+    const profile = await UserProfile.findOne({ user_id: userId }).lean()
+    if (!profile?.avatar_storage_key || !fs.existsSync(profile.avatar_storage_key)) {
+      throw notFound('Profile photo not found')
+    }
+
+    res.setHeader('Content-Type', profile.avatar_mime_type || 'image/jpeg')
+    res.setHeader('Cache-Control', 'private, max-age=3600')
+    fs.createReadStream(profile.avatar_storage_key).pipe(res)
   } catch (error) {
     next(error)
   }
@@ -79,15 +177,30 @@ router.get('/me/groups', async (req, res, next) => {
       .sort({ created_at: -1 })
       .lean()
 
-    const result = await Promise.all(
+    const memberUserIds = new Set()
+    const groupMembersMap = new Map()
+
+    await Promise.all(
       groups.map(async (group) => {
         const members = await GroupMember.find({ group_id: group.id }).lean()
-        const memberUsers = await User.find({ id: { $in: members.map((m) => m.user_id) } }).lean()
-        const userById = Object.fromEntries(memberUsers.map((u) => [u.id, u]))
+        groupMembersMap.set(group.id, members)
+        members.forEach((m) => memberUserIds.add(m.user_id))
+      }),
+    )
+
+    const memberUsers = await User.find({ id: { $in: [...memberUserIds] } }).lean()
+    const profiles = await UserProfile.find({ user_id: { $in: [...memberUserIds] } }).lean()
+    const userById = Object.fromEntries(memberUsers.map((u) => [u.id, u]))
+    const profileByUserId = Object.fromEntries(profiles.map((p) => [p.user_id, p]))
+
+    const result = await Promise.all(
+      groups.map(async (group) => {
+        const members = groupMembersMap.get(group.id) ?? []
 
         const formattedMembers = members.map((m) => {
           const u = userById[m.user_id]
-          return formatMember({
+          const memberProfile = profileByUserId[m.user_id]
+          const formatted = formatMember({
             user_id: m.user_id,
             initials: m.initials,
             avatar_color: m.avatar_color,
@@ -95,6 +208,9 @@ router.get('/me/groups', async (req, res, next) => {
             last_name: u?.last_name,
             program: u?.program,
           })
+          const avatarUrl = avatarUrlForUser(m.user_id, memberProfile)
+          if (avatarUrl) formatted.avatarUrl = avatarUrl
+          return formatted
         })
 
         const taskStats = await Task.aggregate([
@@ -138,14 +254,7 @@ router.get('/:userId/profile', async (req, res, next) => {
       if (!profile) {
         throw notFound('Profile not found')
       }
-      return res.json({
-        fullName: profile.full_name,
-        studentRole: profile.student_role,
-        primaryUniversity: profile.primary_university,
-        secondaryUniversity: profile.secondary_university ?? '',
-        email: req.user.email,
-        location: profile.location,
-      })
+      return res.json(formatProfileResponse(profile, req.user, { includeEmail: true }))
     }
 
     const sharesGroup = await usersShareGroup(req.user.id, userId)
@@ -163,13 +272,10 @@ router.get('/:userId/profile', async (req, res, next) => {
       throw notFound('Profile not found')
     }
 
-    res.json({
-      fullName: profile.full_name,
-      studentRole: profile.student_role || targetUser.program,
-      primaryUniversity: profile.primary_university || targetUser.university,
-      secondaryUniversity: profile.secondary_university ?? '',
-      location: profile.location,
-    })
+    const body = formatProfileResponse(profile, targetUser)
+    if (!body.studentRole) body.studentRole = targetUser.program
+    if (!body.primaryUniversity) body.primaryUniversity = targetUser.university
+    res.json(body)
   } catch (error) {
     next(error)
   }

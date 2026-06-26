@@ -315,6 +315,38 @@ paths:
       responses:
         '200':
           description: Updated
+  /users/me/avatar:
+    post:
+      tags: [Users]
+      summary: Upload profile photo (multipart field photo, max 5MB)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Returns avatarUrl
+    delete:
+      tags: [Users]
+      summary: Remove profile photo
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Removed
+  /users/{userId}/avatar:
+    get:
+      tags: [Users]
+      summary: Stream profile photo (self or shared group member)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Image stream
   /users/me/groups:
     get:
       tags: [Users]

@@ -4,7 +4,7 @@ import { v4 as uuid } from 'uuid'
 import { User, UserProfile } from '../db/models.js'
 import { authRequired, signToken } from '../middleware/auth.js'
 import { conflict, validationError, unauthorized } from '../utils/errors.js'
-import { formatUser } from '../utils/serializers.js'
+import { formatUserWithAvatar } from '../utils/profileAvatar.js'
 
 const router = Router()
 
@@ -81,7 +81,7 @@ router.post('/register', async (req, res, next) => {
     const user = await User.findOne({ id: userId }).lean()
     const token = signToken(userId)
 
-    res.status(201).json({ token, user: formatUser(user) })
+    res.status(201).json({ token, user: await formatUserWithAvatar(user) })
   } catch (error) {
     next(error)
   }
@@ -100,14 +100,14 @@ router.post('/login', async (req, res, next) => {
     }
 
     const token = signToken(user.id)
-    res.json({ token, user: formatUser(user) })
+    res.json({ token, user: await formatUserWithAvatar(user) })
   } catch (error) {
     next(error)
   }
 })
 
-router.get('/me', authRequired, (req, res) => {
-  res.json(req.userFormatted)
+router.get('/me', authRequired, async (req, res) => {
+  res.json(await formatUserWithAvatar(req.user))
 })
 
 export default router
