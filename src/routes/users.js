@@ -10,6 +10,7 @@ import { forbidden, notFound, validationError } from '../utils/errors.js'
 import { formatMember } from '../utils/serializers.js'
 import { pickGroupAccent } from '../utils/helpers.js'
 import { usersShareGroup } from '../services/matchingService.js'
+import { computeUserReliability, formatReliability } from '../services/reliabilityService.js'
 import { avatarUrlForUser, formatProfileResponse } from '../utils/profileAvatar.js'
 import notificationsRouter from './notifications.js'
 
@@ -48,6 +49,33 @@ async function loadProfileOrFail(userId) {
     throw validationError('Profile not found')
   }
   return profile
+}
+
+async function assertCanViewUserReliability(viewerId, targetUserId, groupIdOrSlug) {
+  if (viewerId === targetUserId) return
+
+  const sharesGroup = await usersShareGroup(viewerId, targetUserId)
+  if (!sharesGroup) {
+    throw forbidden('You can only view reliability for members in your study groups')
+  }
+
+  if (groupIdOrSlug) {
+    const group = await StudyGroup.findOne({
+      $or: [{ id: groupIdOrSlug }, { slug: groupIdOrSlug }],
+    }).lean()
+    if (!group) {
+      throw notFound('Workspace not found')
+    }
+
+    const [viewerMember, targetMember] = await Promise.all([
+      GroupMember.findOne({ group_id: group.id, user_id: viewerId }).lean(),
+      GroupMember.findOne({ group_id: group.id, user_id: targetUserId }).lean(),
+    ])
+
+    if (!viewerMember || !targetMember) {
+      throw forbidden('Both users must be members of the specified workspace')
+    }
+  }
 }
 
 router.get('/me/profile', async (req, res, next) => {
@@ -248,6 +276,35 @@ router.get('/me/groups', async (req, res, next) => {
   }
 })
 
+router.get('/me/reliability', async (req, res, next) => {
+  try {
+    const result = await computeUserReliability(req.user.id, req.query.groupId?.trim() || null)
+    res.json(formatReliability(result))
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.get('/:userId/reliability', async (req, res, next) => {
+  try {
+    const { userId } = req.params
+    const groupId = req.query.groupId?.trim() || null
+
+    if (userId !== req.user.id) {
+      const targetUser = await User.findOne({ id: userId }).lean()
+      if (!targetUser) {
+        throw notFound('User not found')
+      }
+    }
+
+    await assertCanViewUserReliability(req.user.id, userId, groupId)
+    const result = await computeUserReliability(userId, groupId)
+    res.json(formatReliability(result))
+  } catch (error) {
+    next(error)
+  }
+})
+
 router.get('/:userId/profile', async (req, res, next) => {
   try {
     const { userId } = req.params
@@ -257,7 +314,10 @@ router.get('/:userId/profile', async (req, res, next) => {
       if (!profile) {
         throw notFound('Profile not found')
       }
-      return res.json(formatProfileResponse(profile, req.user, { includeEmail: true }))
+      const body = formatProfileResponse(profile, req.user, { includeEmail: true })
+      const reliability = await computeUserReliability(userId, req.query.groupId?.trim() || null)
+      body.reliability = formatReliability(reliability)
+      return res.json(body)
     }
 
     const sharesGroup = await usersShareGroup(req.user.id, userId)
@@ -278,6 +338,12 @@ router.get('/:userId/profile', async (req, res, next) => {
     const body = formatProfileResponse(profile, targetUser)
     if (!body.studentRole) body.studentRole = targetUser.program
     if (!body.primaryUniversity) body.primaryUniversity = targetUser.university
+
+    const groupId = req.query.groupId?.trim() || null
+    await assertCanViewUserReliability(req.user.id, userId, groupId)
+    const reliability = await computeUserReliability(userId, groupId)
+    body.reliability = formatReliability(reliability)
+
     res.json(body)
   } catch (error) {
     next(error)

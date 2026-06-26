@@ -4,6 +4,7 @@ import { authRequired, requireGroupMember } from '../../middleware/auth.js'
 import { formatMember } from '../../utils/serializers.js'
 import { formatCourseLabel } from '../../utils/helpers.js'
 import { avatarUrlForUser } from '../../utils/profileAvatar.js'
+import { computeReliabilityBatch, formatReliability } from '../../services/reliabilityService.js'
 
 const router = Router({ mergeParams: true })
 
@@ -16,6 +17,8 @@ router.get('/', async (req, res, next) => {
     const profiles = await UserProfile.find({ user_id: { $in: members.map((m) => m.user_id) } }).lean()
     const userById = Object.fromEntries(users.map((u) => [u.id, u]))
     const profileByUserId = Object.fromEntries(profiles.map((p) => [p.user_id, p]))
+    const memberIds = members.map((m) => m.user_id)
+    const reliabilityByUser = await computeReliabilityBatch(memberIds, req.group.id, req.group.slug)
 
     const formatted = members.map((m) => {
       const u = userById[m.user_id]
@@ -29,6 +32,7 @@ router.get('/', async (req, res, next) => {
       })
       const avatarUrl = avatarUrlForUser(m.user_id, profileByUserId[m.user_id])
       if (avatarUrl) member.avatarUrl = avatarUrl
+      member.reliability = formatReliability(reliabilityByUser[m.user_id])
       return member
     })
 

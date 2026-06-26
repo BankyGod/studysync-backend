@@ -17,6 +17,7 @@ import {
 } from '../utils/helpers.js'
 import { loadProfile } from '../routes/onboarding.js'
 import { alreadyInGroup, notFound, validationError } from '../utils/errors.js'
+import { computeReliabilityBatch, formatReliability } from './reliabilityService.js'
 
 const MATCHING_STEPS = ['course', 'preferences', 'compatibility', 'searching', 'finalizing']
 const STEP_PROGRESS = [20, 40, 65, 85, 100]
@@ -40,12 +41,17 @@ export async function getGroupMembers(groupId) {
 }
 
 export async function buildMatchPayload(group, userId) {
-  const members = (await getGroupMembers(group.id)).map((m) => ({
+  const memberRows = await getGroupMembers(group.id)
+  const memberIds = memberRows.map((m) => m.user_id)
+  const reliabilityByUser = await computeReliabilityBatch(memberIds, group.id, group.slug)
+
+  const members = memberRows.map((m) => ({
     id: m.user_id,
     name: `${m.first_name} ${m.last_name}`.trim(),
     major: m.program,
     initials: m.initials,
     color: m.avatar_color,
+    reliability: formatReliability(reliabilityByUser[m.user_id]),
   }))
 
   const metrics = await computeMatchMetrics(userId, group.id, null)

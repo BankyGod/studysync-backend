@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: StudySync API
-  description: Backend API for the StudySync collaborative learning platform. Reliability score endpoints are not included.
+  description: Backend API for the StudySync collaborative learning platform.
   version: 1.0.0
 servers:
   - url: http://localhost:3000/api
@@ -259,6 +259,24 @@ components:
           format: date-time
         metadata:
           type: object
+    Reliability:
+      type: object
+      properties:
+        score:
+          type: integer
+          nullable: true
+          description: 0-100 when at least 3 assigned tasks are scored; otherwise null
+        tasksScored:
+          type: integer
+        label:
+          type: string
+          example: Reliable
+        scope:
+          type: string
+          enum: [group, global]
+        groupId:
+          type: string
+          description: Present when scope is group
 paths:
   /auth/register:
     post:
@@ -412,6 +430,48 @@ paths:
       responses:
         '200':
           description: OK
+  /users/me/reliability:
+    get:
+      tags: [Users]
+      summary: Get your reliability score
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: groupId
+          in: query
+          description: Workspace slug for pod-scoped score (e.g. biology-101)
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Reliability score
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reliability'
+  /users/{userId}/reliability:
+    get:
+      tags: [Users]
+      summary: Get a member's reliability score (shared group required)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: groupId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Reliability score
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reliability'
   /users/{userId}/profile:
     get:
       tags: [Users]
