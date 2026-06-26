@@ -15,6 +15,7 @@ import {
   pickAvatarColor,
 } from '../utils/helpers.js'
 import { loadProfile } from '../routes/onboarding.js'
+import { conflict, notFound, validationError } from '../utils/errors.js'
 
 const MATCHING_STEPS = ['course', 'preferences', 'compatibility', 'searching', 'finalizing']
 const STEP_PROGRESS = [20, 40, 65, 85, 100]
@@ -134,6 +135,74 @@ async function addMemberToGroup(groupId, user) {
   })
 }
 
+export async function getUserGroupForCourse(userId, subject, courseNumber) {
+  const memberships = await GroupMember.find({ user_id: userId }).lean()
+  if (!memberships.length) return null
+
+  const groupIds = memberships.map((m) => m.group_id)
+  const group = await StudyGroup.findOne({
+    id: { $in: groupIds },
+    subject,
+    course_number: courseNumber,
+  }).lean()
+
+  if (!group) return null
+
+  const membership = memberships.find((m) => m.group_id === group.id)
+  return { group, membership }
+}
+
+export async function assertNotInCourseGroup(userId, subject, courseNumber) {
+  const existing = await getUserGroupForCourse(userId, subject, courseNumber)
+  if (existing) {
+    throw conflict(
+      `You are already in a study group for ${formatCourseLabel(subject, courseNumber)}. Leave your current group before matching or joining another.`,
+    )
+  }
+}
+
+async function assertGroupHasSpace(groupId, groupSize = 'medium') {
+  const memberCount = await GroupMember.countDocuments({ group_id: groupId })
+  if (memberCount >= groupSizeLimit(groupSize)) {
+    throw validationError('This study group is full')
+  }
+}
+
+export async function leaveGroup(userId, groupSlug) {
+  const group = await StudyGroup.findOne({ slug: groupSlug }).lean()
+  if (!group) {
+    throw notFound('Study group not found')
+  }
+
+  const result = await GroupMember.deleteOne({ group_id: group.id, user_id: userId })
+  if (result.deletedCount === 0) {
+    throw notFound('You are not a member of this group')
+  }
+
+  return {
+    groupId: group.slug,
+    courseLabel: formatCourseLabel(group.subject, group.course_number),
+  }
+}
+
+export async function joinGroup(user, groupSlug, studyPreferences = { groupSize: 'medium' }) {
+  const group = await StudyGroup.findOne({ slug: groupSlug }).lean()
+  if (!group) {
+    throw notFound('Study group not found')
+  }
+
+  const alreadyMember = await GroupMember.findOne({ group_id: group.id, user_id: user.id }).lean()
+  if (alreadyMember) {
+    return buildMatchPayload(group, user.id)
+  }
+
+  await assertNotInCourseGroup(user.id, group.subject, group.course_number)
+  await assertGroupHasSpace(group.id, studyPreferences.groupSize ?? 'medium')
+  await addMemberToGroup(group.id, user)
+
+  return buildMatchPayload(group, user.id)
+}
+
 export async function runMatchingForUser(user, payload, io) {
   const profile = await loadProfile(user.id)
   const course = payload.course ?? profile?.courses?.[0]
@@ -141,6 +210,8 @@ export async function runMatchingForUser(user, payload, io) {
   if (!course?.subject || !course?.courseNumber) {
     throw new Error('No course available for matching')
   }
+
+  await assertNotInCourseGroup(user.id, course.subject, course.courseNumber)
 
   const studyPreferences = payload.studyPreferences ?? profile?.studyPreferences ?? { groupSize: 'medium' }
   const jobId = uuid()
@@ -186,6 +257,7 @@ export async function runMatchingForUser(user, payload, io) {
           group = await createGroup(course.subject, course.courseNumber)
         }
 
+        await assertGroupHasSpace(group.id, studyPreferences.groupSize)
         await addMemberToGroup(group.id, user)
 
         const completedAt = new Date().toISOString()

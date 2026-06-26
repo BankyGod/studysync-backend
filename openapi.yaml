@@ -327,12 +327,46 @@ paths:
   /matching/find-group:
     post:
       tags: [Matching]
-      summary: Start matching for a study group
+      summary: Start matching for a study group (blocked if already in a group for that course)
       security:
         - bearerAuth: []
       responses:
         '202':
           description: Matching job started or completed
+        '409':
+          description: Already in a group for this course
+  /matching/groups/{groupId}/join:
+    post:
+      tags: [Matching]
+      summary: Join a specific study group (leave current group for that course first)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Joined group
+        '409':
+          description: Already in a group for this course
+  /matching/groups/{groupId}/leave:
+    delete:
+      tags: [Matching]
+      summary: Leave a study group
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Left group
   /matching/jobs/{jobId}:
     get:
       tags: [Matching]

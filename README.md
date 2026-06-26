@@ -36,8 +36,14 @@ Copy `.env.example` to `.env` and adjust if needed:
 
 1. `POST /api/auth/register` — create account
 2. `POST /api/onboarding/profile` — save learning profile
-3. `POST /api/matching/find-group` — get matched into a pod
+3. `POST /api/matching/find-group` — get matched into a pod (only if not already in a group for that course)
 4. Use `/api/workspaces/{groupId}/*` for tasks, chat, files, sessions
+
+**Changing groups:** you cannot search/match again while already in a group for the same course. Leave first, then join or match again:
+
+- `DELETE /api/matching/groups/{groupId}/leave` — leave your current group
+- `GET /api/matching/course/{courseCode}` — browse open groups
+- `POST /api/matching/groups/{groupId}/join` — join a specific group
 
 ## Production
 
