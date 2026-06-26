@@ -1,4 +1,5 @@
 import { Task, User, GroupMember, TaskMoveRequest } from './models.js'
+import { getInitials, pickAvatarColor } from '../utils/helpers.js'
 
 export async function fetchTaskRows(groupId, taskId = null) {
   const filter = taskId ? { id: taskId, group_id: groupId } : { group_id: groupId }
@@ -32,8 +33,10 @@ export async function fetchTaskRows(groupId, taskId = null) {
       avatar_color: assigneeMember?.avatar_color ?? null,
       assignee_name: assigneeUser ? `${assigneeUser.first_name} ${assigneeUser.last_name}`.trim() : '',
       creator_name: creatorUser ? `${creatorUser.first_name} ${creatorUser.last_name}`.trim() : '',
-      creator_initials: creatorMember?.initials ?? null,
-      creator_color: creatorMember?.avatar_color ?? null,
+      creator_initials:
+        creatorMember?.initials ??
+        (creatorUser ? getInitials(creatorUser.first_name, creatorUser.last_name) : null),
+      creator_color: creatorMember?.avatar_color ?? (task.creator_id ? pickAvatarColor(task.creator_id) : null),
       pending_regress_request: pendingByTaskId[task.id] ?? null,
     }
   })

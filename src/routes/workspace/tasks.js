@@ -5,6 +5,7 @@ import { Task, TaskRegressRequest } from '../../db/models.js'
 import { fetchTaskRows } from '../../db/taskQueries.js'
 import { authRequired, requireGroupMember } from '../../middleware/auth.js'
 import { notFound, validationError, forbidden, conflict, regressRequiresApproval } from '../../utils/errors.js'
+import { pickAvatarColor } from '../../utils/helpers.js'
 import {
   buildProgressUpdates,
   buildStatusUpdates,
@@ -38,9 +39,17 @@ function formatTask(row) {
   if (row.creator_id) {
     task.createdBy = {
       id: row.creator_id,
-      initials: row.creator_initials,
-      name: row.creator_name,
-      color: row.creator_color,
+      initials:
+        row.creator_initials ??
+        (row.creator_name
+          ? row.creator_name
+              .split(/\s+/)
+              .map((part) => part[0]?.toUpperCase() ?? '')
+              .join('')
+              .slice(0, 2) || '??'
+          : '??'),
+      name: row.creator_name || 'Unknown',
+      color: row.creator_color ?? pickAvatarColor(row.creator_id),
     }
   }
   if (row.assignee_id) {
@@ -73,8 +82,11 @@ function groupTasksByStatus(rows) {
 }
 
 function canDeleteTask(task, userId) {
-  if (!task.creator_id) return true
-  return task.creator_id === userId
+  return Boolean(task.creator_id) && task.creator_id === userId
+}
+
+function canEditTaskMetadata(task, userId) {
+  return Boolean(task.creator_id) && task.creator_id === userId
 }
 
 function assertForwardOrCreatorMove(existing, nextStatus, userId) {
@@ -465,9 +477,19 @@ router.patch('/:taskId', async (req, res, next) => {
     }
 
     const { title, dueDate, assigneeId, status, variant, position } = req.body ?? {}
+    const isMetadataEdit = title !== undefined || dueDate !== undefined || assigneeId !== undefined
+
+    if (isMetadataEdit && !canEditTaskMetadata(existing, req.user.id)) {
+      throw forbidden('Only the task creator can edit title, due date, or assignee')
+    }
+
+    if (title !== undefined && !title?.trim()) {
+      throw validationError('Task title is required')
+    }
+
     const previousAssigneeId = existing.assignee_id
     const updates = {
-      title: title?.trim() ?? existing.title,
+      title: title !== undefined ? title.trim() : existing.title,
       due_date: dueDate !== undefined ? dueDate || null : existing.due_date,
       assignee_id: assigneeId !== undefined ? assigneeId || null : existing.assignee_id,
       position: position ?? existing.position,
