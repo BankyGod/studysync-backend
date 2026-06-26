@@ -7,7 +7,6 @@ REST API + Socket.IO for StudySync. Uses MongoDB. No demo data is seeded on star
 **Prerequisites:** MongoDB running locally (or a remote `MONGODB_URI`).
 
 ```bash
-cd backend
 cp .env.example .env   # optional — defaults work for local dev
 npm install
 npm run dev
@@ -59,7 +58,7 @@ The app is ready for platforms like Render, Railway, or Heroku:
 Render does **not** read your local `.env` file. Add these under **Environment** in the Render dashboard, then redeploy.
 
 **Render settings:**
-- Root directory: leave blank if `package.json` is at repo root, or set to `backend` if the repo root is the parent folder
+- Root directory: leave blank (`package.json` is at repo root)
 - Build command: `npm install`
 - Start command: `npm start`
 
@@ -67,5 +66,3 @@ Render does **not** read your local `.env` file. Add these under **Environment**
 
 - `npm run dev` — start with auto-reload (`node --watch`)
 - `npm start` — production-style start
-
-From repo root: `npm run dev:backend`
