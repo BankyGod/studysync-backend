@@ -2,31 +2,68 @@ import path from 'path'
 import fs from 'fs'
 import { Router } from 'express'
 import multer from 'multer'
+import mongoose from 'mongoose'
 import { v4 as uuid } from 'uuid'
 import { Message, StoredFile } from '../../db/models.js'
 import { config } from '../../config.js'
 import { authRequired, requireGroupMember } from '../../middleware/auth.js'
+import { createUploadRateLimiter } from '../../middleware/uploadRateLimit.js'
 import { forbidden, notFound, validationError } from '../../utils/errors.js'
+import {
+  MAX_VOICE_DURATION_SEC,
+  buildSharedStoragePath,
+  buildVoiceStoragePath,
+  contentDisposition,
+  downloadUrl,
+  formatFileEntry,
+  isListableSharedFile,
+  newFileId,
+  sanitizeFileName,
+  sharedStorageDir,
+  validateSharedUpload,
+  validateVoiceUpload,
+  voiceStorageDir,
+} from '../../services/workspaceFileService.js'
 
 const router = Router({ mergeParams: true })
+const uploadRateLimit = createUploadRateLimiter({ maxUploads: 20 })
 
-const MAX_CHAT_FILE = 10 * 1024 * 1024
-const MAX_VOICE_FILE = 2 * 1024 * 1024
-const MAX_VOICE_DURATION = 120
+function createSharedUpload() {
+  return multer({
+    storage: multer.diskStorage({
+      destination: (req, file, cb) => {
+        fs.mkdirSync(sharedStorageDir(config.uploadsDir, req.group.slug), { recursive: true })
+        cb(null, sharedStorageDir(config.uploadsDir, req.group.slug))
+      },
+      filename: (req, file, cb) => {
+        const fileId = newFileId()
+        req.pendingUploadFileId = fileId
+        cb(null, path.basename(buildSharedStoragePath(config.uploadsDir, req.group.slug, fileId, file.originalname)))
+      },
+    }),
+    limits: { fileSize: 10 * 1024 * 1024 },
+  })
+}
 
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => {
-      const dir = path.join(config.uploadsDir, req.group.slug, 'chat')
-      fs.mkdirSync(dir, { recursive: true })
-      cb(null, dir)
-    },
-    filename: (req, file, cb) => {
-      cb(null, `${uuid()}${path.extname(file.originalname)}`)
-    },
-  }),
-  limits: { fileSize: MAX_CHAT_FILE },
-})
+function createVoiceUpload() {
+  return multer({
+    storage: multer.diskStorage({
+      destination: (req, file, cb) => {
+        fs.mkdirSync(voiceStorageDir(config.uploadsDir, req.group.slug), { recursive: true })
+        cb(null, voiceStorageDir(config.uploadsDir, req.group.slug))
+      },
+      filename: (req, file, cb) => {
+        const messageId = req.pendingMessageId ?? uuid()
+        req.pendingMessageId = messageId
+        cb(null, path.basename(buildVoiceStoragePath(config.uploadsDir, req.group.slug, messageId, file.originalname)))
+      },
+    }),
+    limits: { fileSize: 2 * 1024 * 1024 },
+  })
+}
+
+const sharedUpload = createSharedUpload()
+const voiceUpload = createVoiceUpload()
 
 router.use(authRequired, requireGroupMember)
 
@@ -40,20 +77,24 @@ function formatMessage(row, groupSlug) {
   }
 
   if (row.type === 'attachment' && row.file_id) {
-    message.attachment = {
+    const attachment = {
       fileName: row.file_name,
       fileSize: row.file_size,
       fileType: row.file_type,
-      downloadUrl: `/api/workspaces/${groupSlug}/files/${row.file_id}/download`,
+      downloadUrl: downloadUrl(groupSlug, row.file_id),
     }
+    if (row.file_missing) {
+      attachment.deleted = true
+    }
+    message.attachment = attachment
   }
 
-  if (row.type === 'voice' && row.file_id) {
+  if (row.type === 'voice') {
     message.voice = {
       durationSec: row.voice_duration_sec,
-      mimeType: row.file_type,
-      fileName: row.file_name,
-      fileSize: row.file_size,
+      mimeType: row.voice_file_type ?? row.file_type,
+      fileName: row.voice_file_name ?? row.file_name ?? 'voice.webm',
+      fileSize: row.voice_file_size ?? row.file_size,
       streamUrl: `/api/workspaces/${groupSlug}/messages/${row.id}/voice`,
     }
   }
@@ -61,17 +102,51 @@ function formatMessage(row, groupSlug) {
   return message
 }
 
+async function enrichMessageRows(messages) {
+  const fileIds = messages.filter((m) => m.type === 'attachment' && m.file_id).map((m) => m.file_id)
+  const files = fileIds.length ? await StoredFile.find({ id: { $in: fileIds } }).lean() : []
+  const fileById = Object.fromEntries(files.map((file) => [file.id, file]))
+
+  return messages.map((message) => {
+    if (message.type !== 'attachment' || !message.file_id) {
+      if (message.type === 'voice' && message.voice_storage_key) {
+        return {
+          ...message,
+          voice_file_name: message.voice_file_name,
+          voice_file_type: message.voice_file_type,
+          voice_file_size: message.voice_file_size,
+        }
+      }
+
+      if (message.type === 'voice' && message.file_id) {
+        const legacyVoice = fileById[message.file_id]
+        return {
+          ...message,
+          file_name: legacyVoice?.file_name,
+          file_size: legacyVoice?.file_size,
+          file_type: legacyVoice?.file_type,
+        }
+      }
+
+      return message
+    }
+
+    const file = fileById[message.file_id]
+    return {
+      ...message,
+      file_name: file?.file_name,
+      file_size: file?.file_size,
+      file_type: file?.file_type,
+      file_missing: !file || !isListableSharedFile(file),
+    }
+  })
+}
+
 async function fetchMessageRow(messageId) {
   const message = await Message.findOne({ id: messageId }).lean()
-  if (!message?.file_id) return message
-
-  const file = await StoredFile.findOne({ id: message.file_id }).lean()
-  return {
-    ...message,
-    file_name: file?.file_name,
-    file_size: file?.file_size,
-    file_type: file?.file_type,
-  }
+  if (!message) return null
+  const [enriched] = await enrichMessageRows([message])
+  return enriched
 }
 
 router.get('/', async (req, res, next) => {
@@ -83,31 +158,30 @@ router.get('/', async (req, res, next) => {
       .limit(limit)
       .lean()
 
-    const fileIds = messages.map((m) => m.file_id).filter(Boolean)
-    const files = fileIds.length ? await StoredFile.find({ id: { $in: fileIds } }).lean() : []
-    const fileById = Object.fromEntries(files.map((f) => [f.id, f]))
-
-    const rows = messages.map((m) => {
-      const file = m.file_id ? fileById[m.file_id] : null
-      return {
-        ...m,
-        file_name: file?.file_name,
-        file_size: file?.file_size,
-        file_type: file?.file_type,
-      }
-    })
-
-    res.json({ messages: rows.map((r) => formatMessage(r, req.group.slug)) })
+    const rows = await enrichMessageRows(messages)
+    res.json({ messages: rows.map((row) => formatMessage(row, req.group.slug)) })
   } catch (error) {
     next(error)
   }
 })
 
-router.post('/', upload.single('file'), async (req, res, next) => {
+router.post('/', uploadRateLimit, (req, res, next) => {
+  const type = req.body?.type || 'text'
+  if (type === 'voice') {
+    return voiceUpload.single('file')(req, res, next)
+  }
+  if (type === 'attachment') {
+    return sharedUpload.single('file')(req, res, next)
+  }
+  return next()
+}, async (req, res, next) => {
+  const session = await mongoose.startSession()
+  let uploadedPath = req.file?.path ?? null
+
   try {
     const type = req.body.type || 'text'
     const now = new Date().toISOString()
-    const messageId = uuid()
+    const messageId = req.pendingMessageId ?? uuid()
 
     if (type === 'text') {
       const content = req.body.content?.trim()
@@ -124,57 +198,86 @@ router.post('/', upload.single('file'), async (req, res, next) => {
         sent_at: now,
       })
     } else if (type === 'attachment') {
-      if (!req.file) {
-        throw validationError('File is required for attachment messages')
+      const validationErrorMessage = validateSharedUpload(req.file)
+      if (validationErrorMessage) {
+        throw validationError(validationErrorMessage)
       }
 
-      const fileId = uuid()
-      await StoredFile.create({
-        id: fileId,
-        group_id: req.group.id,
-        uploaded_by_id: req.user.id,
-        file_name: req.file.originalname,
-        file_size: req.file.size,
-        file_type: req.file.mimetype,
-        storage_key: req.file.path,
-        purpose: 'chat_attachment',
-        uploaded_at: now,
-      })
+      const fileId = req.pendingUploadFileId ?? newFileId()
+      const safeName = sanitizeFileName(req.file.originalname)
+      const content = `Shared a file: ${safeName}`
 
-      await Message.create({
-        id: messageId,
-        group_id: req.group.id,
-        sender_id: req.user.id,
-        type: 'attachment',
-        content: `Shared a file: ${req.file.originalname}`,
-        file_id: fileId,
-        sent_at: now,
-      })
+      session.startTransaction()
+
+      await StoredFile.create(
+        [
+          {
+            id: fileId,
+            group_id: req.group.id,
+            uploaded_by_id: req.user.id,
+            file_name: safeName,
+            file_size: req.file.size,
+            file_type: req.file.mimetype,
+            storage_key: req.file.path,
+            source: 'chat',
+            purpose: 'chat_attachment',
+            uploaded_at: now,
+          },
+        ],
+        { session },
+      )
+
+      await Message.create(
+        [
+          {
+            id: messageId,
+            group_id: req.group.id,
+            sender_id: req.user.id,
+            type: 'attachment',
+            content,
+            file_id: fileId,
+            sent_at: now,
+          },
+        ],
+        { session },
+      )
+
+      await session.commitTransaction()
+
+      const fileEntry = formatFileEntry(
+        {
+          id: fileId,
+          file_name: safeName,
+          file_size: req.file.size,
+          file_type: req.file.mimetype,
+          uploaded_by_id: req.user.id,
+          uploaded_at: now,
+          source: 'chat',
+          purpose: 'chat_attachment',
+        },
+        req.group.slug,
+        `${req.user.first_name} ${req.user.last_name}`.trim(),
+      )
+
+      const row = await fetchMessageRow(messageId)
+      const message = formatMessage(row, req.group.slug)
+      const io = req.app.get('io')
+      io?.to(`workspace:${req.group.slug}`).emit('message:new', { groupId: req.group.slug, message })
+      io?.to(`workspace:${req.group.slug}`).emit('file:new', { groupId: req.group.slug, file: fileEntry })
+
+      return res.status(201).json(message)
     } else if (type === 'voice') {
-      if (!req.file) {
-        throw validationError('Voice file is required')
-      }
-      if (req.file.size > MAX_VOICE_FILE) {
-        throw validationError('Voice file too large (max 2MB)')
+      const validationErrorMessage = validateVoiceUpload(req.file)
+      if (validationErrorMessage) {
+        throw validationError(validationErrorMessage)
       }
 
       const durationSec = Number(req.body.durationSec) || 0
-      if (durationSec > MAX_VOICE_DURATION) {
-        throw validationError(`Voice notes can be up to ${MAX_VOICE_DURATION} seconds`)
+      if (durationSec > MAX_VOICE_DURATION_SEC) {
+        throw validationError(`Voice notes can be up to ${MAX_VOICE_DURATION_SEC} seconds`)
       }
 
-      const fileId = uuid()
-      await StoredFile.create({
-        id: fileId,
-        group_id: req.group.id,
-        uploaded_by_id: req.user.id,
-        file_name: req.file.originalname,
-        file_size: req.file.size,
-        file_type: req.file.mimetype,
-        storage_key: req.file.path,
-        purpose: 'voice',
-        uploaded_at: now,
-      })
+      const safeName = sanitizeFileName(req.file.originalname)
 
       await Message.create({
         id: messageId,
@@ -182,8 +285,11 @@ router.post('/', upload.single('file'), async (req, res, next) => {
         sender_id: req.user.id,
         type: 'voice',
         content: 'Sent a voice message',
-        file_id: fileId,
         voice_duration_sec: durationSec,
+        voice_storage_key: req.file.path,
+        voice_file_name: safeName,
+        voice_file_type: req.file.mimetype,
+        voice_file_size: req.file.size,
         sent_at: now,
       })
     } else {
@@ -197,42 +303,48 @@ router.post('/', upload.single('file'), async (req, res, next) => {
 
     res.status(201).json(message)
   } catch (error) {
+    if (session.inTransaction()) {
+      await session.abortTransaction()
+    }
+    if (uploadedPath && fs.existsSync(uploadedPath)) {
+      fs.unlinkSync(uploadedPath)
+    }
     next(error)
-  }
-})
-
-router.get('/:messageId/attachment', async (req, res, next) => {
-  try {
-    await serveMessageFile(req, res, 'attachment')
-  } catch (error) {
-    next(error)
+  } finally {
+    session.endSession()
   }
 })
 
 router.get('/:messageId/voice', async (req, res, next) => {
   try {
-    await serveMessageFile(req, res, 'voice')
+    const message = await Message.findOne({ id: req.params.messageId, group_id: req.group.id }).lean()
+
+    if (!message || message.type !== 'voice') {
+      throw notFound('Voice message not found')
+    }
+
+    if (message.voice_storage_key && fs.existsSync(message.voice_storage_key)) {
+      res.setHeader('Content-Type', message.voice_file_type || 'audio/webm')
+      res.setHeader('Content-Disposition', contentDisposition(message.voice_file_name || 'voice.webm', true))
+      fs.createReadStream(message.voice_storage_key).pipe(res)
+      return
+    }
+
+    if (message.file_id) {
+      const file = await StoredFile.findOne({ id: message.file_id, purpose: 'voice' }).lean()
+      if (file && fs.existsSync(file.storage_key)) {
+        res.setHeader('Content-Type', file.file_type)
+        res.setHeader('Content-Disposition', contentDisposition(file.file_name, true))
+        fs.createReadStream(file.storage_key).pipe(res)
+        return
+      }
+    }
+
+    throw notFound('Voice message not found')
   } catch (error) {
     next(error)
   }
 })
-
-async function serveMessageFile(req, res, expectedType) {
-  const message = await Message.findOne({ id: req.params.messageId, group_id: req.group.id }).lean()
-
-  if (!message || message.type !== expectedType || !message.file_id) {
-    throw notFound('File not found')
-  }
-
-  const file = await StoredFile.findOne({ id: message.file_id }).lean()
-  if (!file || !fs.existsSync(file.storage_key)) {
-    throw notFound('File not found')
-  }
-
-  res.setHeader('Content-Type', file.file_type)
-  res.setHeader('Content-Disposition', `inline; filename="${file.file_name}"`)
-  fs.createReadStream(file.storage_key).pipe(res)
-}
 
 router.delete('/:messageId', async (req, res, next) => {
   try {
@@ -246,12 +358,16 @@ router.delete('/:messageId', async (req, res, next) => {
       throw forbidden('You can only delete your own messages')
     }
 
-    if (message.file_id) {
-      const file = await StoredFile.findOne({ id: message.file_id }).lean()
-      if (file && fs.existsSync(file.storage_key)) {
-        fs.unlinkSync(file.storage_key)
+    if (message.type === 'voice') {
+      if (message.voice_storage_key && fs.existsSync(message.voice_storage_key)) {
+        fs.unlinkSync(message.voice_storage_key)
+      } else if (message.file_id) {
+        const file = await StoredFile.findOne({ id: message.file_id, purpose: 'voice' }).lean()
+        if (file?.storage_key && fs.existsSync(file.storage_key)) {
+          fs.unlinkSync(file.storage_key)
+        }
+        await StoredFile.deleteOne({ id: message.file_id })
       }
-      await StoredFile.deleteOne({ id: message.file_id })
     }
 
     await Message.deleteOne({ id: req.params.messageId })

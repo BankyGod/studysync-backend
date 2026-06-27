@@ -44,6 +44,16 @@ Copy `.env.example` to `.env` and adjust if needed:
 - `GET /api/matching/course/{courseCode}` — browse open groups
 - `POST /api/matching/groups/{groupId}/join` — join a specific group
 
+## Workspace files
+
+Chat attachments and Files tab uploads share one `stored_files` record per binary (`source`: `chat` | `files`). Both use `GET /api/workspaces/{groupId}/files` and the same download URL.
+
+| Action | Behavior |
+|--------|----------|
+| Delete chat message | Message removed; file stays in the pod Files list |
+| Delete file | File removed; chat message remains; download returns `404` |
+| Voice message | Chat-only storage; never listed under Files |
+
 ## Production
 
 The app is ready for platforms like Render, Railway, or Heroku:
