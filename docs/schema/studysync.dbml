@@ -1,0 +1,268 @@
+// StudySync — MongoDB schema (documentation only)
+// Paste into https://dbdiagram.io to visualize
+// Source of truth for the running app: src/db/models.js
+// IDs are UUID strings in production (shown as varchar here)
+
+Table users {
+  id varchar [primary key, note: 'MongoDB collection: users']
+  email varchar [unique, not null]
+  password_hash varchar [not null]
+  first_name varchar [not null]
+  last_name varchar [not null]
+  student_id varchar [unique, not null]
+  phone varchar
+  university varchar [not null]
+  program varchar [not null]
+  level varchar [not null, note: '100 | 200 | 300 | 400']
+  role varchar [not null, note: 'student | instructor']
+  created_at varchar [not null, note: 'ISO-8601']
+  updated_at varchar [not null, note: 'ISO-8601']
+}
+
+Table user_profiles {
+  user_id varchar [primary key, note: 'MongoDB collection: user_profiles']
+  full_name varchar [not null]
+  student_role varchar
+  primary_university varchar
+  secondary_university varchar
+  location varchar
+  avatar_storage_key varchar
+  avatar_mime_type varchar
+  updated_at varchar [not null]
+}
+
+Table onboarding_profiles {
+  user_id varchar [primary key, note: 'MongoDB collection: onboarding_profiles']
+  learning_style varchar [not null, note: 'visual | auditory | reading | kinesthetic']
+  availability varchar [not null, note: 'JSON array of slots, e.g. Mon-8 AM']
+  study_preferences varchar [not null, note: 'JSON: groupSize, timeCommitment, difficulty']
+  completed_at varchar
+  saved_at varchar [not null]
+}
+
+Table user_courses {
+  id varchar [primary key, note: 'MongoDB collection: user_courses']
+  user_id varchar [not null]
+  subject varchar [not null]
+  course_number varchar [not null]
+  is_primary int [note: '1 = primary course, 0 = secondary']
+}
+
+Table cohorts {
+  id varchar [primary key, note: 'MongoDB collection: cohorts']
+  name varchar [not null]
+  term varchar
+  created_at varchar [not null]
+}
+
+Table study_groups {
+  id varchar [primary key, note: 'MongoDB collection: study_groups']
+  slug varchar [unique, not null, note: 'URL slug, e.g. biology-101']
+  title varchar [not null]
+  subject varchar [not null]
+  course_number varchar [not null]
+  cohort_id varchar
+  created_at varchar [not null]
+}
+
+Table group_members {
+  group_id varchar [not null]
+  user_id varchar [not null]
+  joined_at varchar [not null]
+  initials varchar [not null]
+  avatar_color varchar [not null, note: 'e.g. bg-sky-500']
+
+  indexes {
+    (group_id, user_id) [unique]
+  }
+}
+
+Table tasks {
+  id varchar [primary key, note: 'MongoDB collection: tasks']
+  group_id varchar [not null]
+  creator_id varchar
+  title varchar [not null]
+  status varchar [not null, note: 'todo | in_progress | completed']
+  progress varchar [note: 'not_started | started | done']
+  variant varchar [note: 'default | highlight | completed']
+  due_date varchar [note: 'YYYY-MM-DD']
+  completed_at varchar
+  started_at varchar
+  assignee_id varchar
+  position int
+  created_at varchar [not null]
+}
+
+Table task_move_requests {
+  id varchar [primary key, note: 'MongoDB collection: task_move_requests — regress approval']
+  task_id varchar [not null]
+  group_id varchar [not null]
+  requester_id varchar [not null]
+  from_status varchar [not null]
+  target_status varchar [not null]
+  status varchar [not null, note: 'pending | approved | denied | rejected']
+  resolved_at varchar
+  resolved_by_id varchar
+  created_at varchar [not null]
+}
+
+Table stored_files {
+  id varchar [primary key, note: 'MongoDB collection: stored_files — shared pod files']
+  group_id varchar [not null]
+  uploaded_by_id varchar [not null]
+  file_name varchar [not null]
+  file_size int [not null]
+  file_type varchar [not null, note: 'MIME type']
+  storage_key varchar [not null, note: 'Path on disk or blob key']
+  source varchar [note: 'chat | files']
+  purpose varchar [note: 'legacy: shared | chat_attachment | voice']
+  uploaded_at varchar [not null]
+}
+
+Table messages {
+  id varchar [primary key, note: 'MongoDB collection: messages']
+  group_id varchar [not null]
+  sender_id varchar [not null]
+  type varchar [not null, note: 'text | attachment | voice']
+  content varchar [not null]
+  file_id varchar [note: 'FK → stored_files when type = attachment']
+  voice_duration_sec int
+  voice_storage_key varchar [note: 'Voice-only; not in stored_files']
+  voice_file_name varchar
+  voice_file_type varchar
+  voice_file_size int
+  sent_at varchar [not null]
+}
+
+Table scheduled_sessions {
+  id varchar [primary key, note: 'MongoDB collection: scheduled_sessions']
+  group_id varchar [not null]
+  title varchar [not null]
+  date varchar [not null, note: 'YYYY-MM-DD']
+  start_time varchar [not null, note: 'HH:mm 24h']
+  end_time varchar [not null]
+  meeting_type varchar [not null, note: 'Online Meeting | In Person | Hybrid']
+  agenda varchar
+  created_by_id varchar
+  created_at varchar [not null]
+}
+
+Table notifications {
+  id varchar [primary key, note: 'MongoDB collection: notifications']
+  user_id varchar [not null]
+  type varchar [not null]
+  title varchar [not null]
+  message varchar [not null]
+  group_id varchar
+  group_slug varchar
+  task_id varchar
+  actor_id varchar
+  read_at varchar
+  created_at varchar [not null]
+  metadata varchar [note: 'JSON object']
+}
+
+Table matching_jobs {
+  id varchar [primary key, note: 'MongoDB collection: matching_jobs']
+  user_id varchar [not null]
+  course_subject varchar [not null]
+  course_number varchar [not null]
+  status varchar [not null, note: 'pending | running | waiting | completed | failed']
+  progress int
+  current_step varchar
+  result_group_id varchar
+  error_message varchar
+  error_code varchar
+  created_at varchar [not null]
+  completed_at varchar
+}
+
+// ——— Relationships ———
+
+Ref user_profile: user_profiles.user_id - users.id
+
+Ref user_onboarding: onboarding_profiles.user_id - users.id
+
+Ref user_courses_user: user_courses.user_id > users.id
+
+Ref group_cohort: study_groups.cohort_id > cohorts.id
+
+Ref member_group: group_members.group_id > study_groups.id
+Ref member_user: group_members.user_id > users.id
+
+Ref task_group: tasks.group_id > study_groups.id
+Ref task_creator: tasks.creator_id > users.id
+Ref task_assignee: tasks.assignee_id > users.id
+
+Ref regress_task: task_move_requests.task_id > tasks.id
+Ref regress_group: task_move_requests.group_id > study_groups.id
+Ref regress_requester: task_move_requests.requester_id > users.id
+Ref regress_resolver: task_move_requests.resolved_by_id > users.id
+
+Ref file_group: stored_files.group_id > study_groups.id
+Ref file_uploader: stored_files.uploaded_by_id > users.id
+
+Ref message_group: messages.group_id > study_groups.id
+Ref message_sender: messages.sender_id > users.id
+Ref message_attachment: messages.file_id > stored_files.id
+
+Ref session_group: scheduled_sessions.group_id > study_groups.id
+Ref session_creator: scheduled_sessions.created_by_id > users.id
+
+Ref notification_user: notifications.user_id > users.id
+Ref notification_actor: notifications.actor_id > users.id
+Ref notification_task: notifications.task_id > tasks.id
+Ref notification_group: notifications.group_id > study_groups.id
+
+Ref matching_user: matching_jobs.user_id > users.id
+Ref matching_result_group: matching_jobs.result_group_id > study_groups.id
+
+// ——— Sample records (illustrative) ———
+
+Records users(id, email, first_name, last_name, student_id, role, university, program, level, created_at) {
+  'user-alice', 'alice@gctu.edu.gh', 'Alice', 'Mensah', 'GCTU-001', 'student', 'GCTU', 'Computer Science', '300', '2026-01-10T09:00:00.000Z'
+  'user-bob', 'bob@gctu.edu.gh', 'Bob', 'Opoku', 'GCTU-002', 'student', 'GCTU', 'Biology', '200', '2026-01-11T10:00:00.000Z'
+  'user-candice', 'candice@gctu.edu.gh', 'Candice', 'Paul', 'GCTU-003', 'student', 'GCTU', 'Computer Science', '300', '2026-01-12T11:00:00.000Z'
+}
+
+Records study_groups(id, slug, title, subject, course_number, created_at) {
+  'grp-bio-101', 'biology-101', 'Biology 101 Study Group', 'Biology', '101', '2026-02-01T08:00:00.000Z'
+  'grp-cs-201', 'computer-science-201', 'Computer Science 201 Study Group', 'Computer Science', '201', '2026-02-05T08:00:00.000Z'
+}
+
+Records group_members(group_id, user_id, joined_at, initials, avatar_color) {
+  'grp-bio-101', 'user-alice', '2026-02-01T09:00:00.000Z', 'AM', 'bg-sky-500'
+  'grp-bio-101', 'user-bob', '2026-02-01T09:05:00.000Z', 'BO', 'bg-emerald-500'
+  'grp-cs-201', 'user-alice', '2026-02-05T10:00:00.000Z', 'AM', 'bg-sky-500'
+  'grp-cs-201', 'user-candice', '2026-02-05T10:05:00.000Z', 'CP', 'bg-violet-500'
+}
+
+Records user_courses(id, user_id, subject, course_number, is_primary) {
+  'course-1', 'user-alice', 'Biology', '101', 1
+  'course-2', 'user-alice', 'Computer Science', '201', 0
+  'course-3', 'user-bob', 'Biology', '101', 1
+}
+
+Records tasks(id, group_id, creator_id, title, status, assignee_id, due_date, created_at) {
+  'task-1', 'grp-bio-101', 'user-alice', 'Review Chapter 3', 'todo', 'user-bob', '2026-03-15', '2026-02-20T09:00:00.000Z'
+  'task-2', 'grp-bio-101', 'user-bob', 'Lab report draft', 'in_progress', 'user-bob', '2026-03-10', '2026-02-21T10:00:00.000Z'
+  'task-3', 'grp-cs-201', 'user-candice', 'Study Big O notation', 'completed', 'user-alice', '2026-02-28', '2026-02-15T08:00:00.000Z'
+}
+
+Records stored_files(id, group_id, uploaded_by_id, file_name, file_size, file_type, source, uploaded_at) {
+  'file-1', 'grp-bio-101', 'user-alice', 'Chapter3_Notes.pdf', 248000, 'application/pdf', 'files', '2026-02-22T14:00:00.000Z'
+  'file-2', 'grp-bio-101', 'user-bob', 'Lab_Sheet.pdf', 120000, 'application/pdf', 'chat', '2026-02-23T10:30:00.000Z'
+}
+
+Records messages(id, group_id, sender_id, type, content, file_id, sent_at) {
+  'msg-1', 'grp-bio-101', 'user-alice', 'text', 'Hey team — study session Saturday?', null, '2026-02-22T09:15:00.000Z'
+  'msg-2', 'grp-bio-101', 'user-bob', 'attachment', 'Shared a file: Lab_Sheet.pdf', 'file-2', '2026-02-23T10:30:00.000Z'
+}
+
+Records notifications(id, user_id, type, title, message, group_slug, task_id, created_at) {
+  'notif-1', 'user-bob', 'task_assigned', 'Task assigned to you', 'Alice assigned you "Review Chapter 3" in Biology 101 Study Group.', 'biology-101', 'task-1', '2026-02-20T09:01:00.000Z'
+}
+
+Records matching_jobs(id, user_id, course_subject, course_number, status, progress, current_step, result_group_id, created_at) {
+  'job-1', 'user-candice', 'Computer Science', '201', 'completed', 100, 'finalizing', 'grp-cs-201', '2026-02-05T09:00:00.000Z'
+}

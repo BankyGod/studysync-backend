@@ -1,12 +1,18 @@
 import { Server } from 'socket.io'
 import { verifyToken } from './middleware/auth.js'
 import { User, StudyGroup, GroupMember } from './db/models.js'
-import { config } from './config.js'
+import { isAllowedCorsOrigin } from './config.js'
 
 export function initSocket(httpServer, app) {
   const io = new Server(httpServer, {
     cors: {
-      origin: config.corsOrigin,
+      origin(origin, callback) {
+        if (isAllowedCorsOrigin(origin)) {
+          callback(null, true)
+          return
+        }
+        callback(null, false)
+      },
       credentials: true,
     },
     path: '/socket.io',

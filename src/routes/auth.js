@@ -8,6 +8,21 @@ import { formatUserWithAvatar } from '../utils/profileAvatar.js'
 
 const router = Router()
 
+function normalizeRegisterBody(body = {}) {
+  return {
+    firstName: body.firstName ?? body.first_name,
+    lastName: body.lastName ?? body.last_name,
+    studentId: body.studentId ?? body.student_id,
+    email: body.email,
+    phone: body.phone,
+    university: body.university,
+    program: body.program,
+    level: body.level != null ? String(body.level) : undefined,
+    role: body.role,
+    password: body.password,
+  }
+}
+
 router.post('/register', async (req, res, next) => {
   try {
     const {
@@ -21,7 +36,7 @@ router.post('/register', async (req, res, next) => {
       level,
       role,
       password,
-    } = req.body ?? {}
+    } = normalizeRegisterBody(req.body)
 
     if (!firstName || !lastName || !studentId || !email || !university || !program || !level || !role || !password) {
       throw validationError('Missing required registration fields')

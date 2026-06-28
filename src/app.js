@@ -5,7 +5,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import swaggerUi from 'swagger-ui-express'
 import YAML from 'yaml'
-import { config } from './config.js'
+import { isAllowedCorsOrigin } from './config.js'
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js'
 import authRoutes from './routes/auth.js'
 import onboardingRoutes from './routes/onboarding.js'
@@ -23,7 +23,13 @@ export function createApp() {
 
   app.use(
     cors({
-      origin: config.corsOrigin,
+      origin(origin, callback) {
+        if (isAllowedCorsOrigin(origin)) {
+          callback(null, true)
+          return
+        }
+        callback(null, false)
+      },
       credentials: true,
     }),
   )
