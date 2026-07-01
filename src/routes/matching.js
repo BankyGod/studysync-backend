@@ -12,26 +12,45 @@ import { loadProfile } from './onboarding.js'
 
 const router = Router()
 
+function normalizeFindGroupBody(body = {}) {
+  const course = body.course ?? {}
+  const subject = course.subject ?? course.courseSubject ?? course.course_subject ?? body.subject
+  const courseNumber =
+    course.courseNumber ??
+    course.course_number ??
+    course.number ??
+    course.code ??
+    body.courseNumber ??
+    body.course_number
+
+  return {
+    ...body,
+    course: {
+      subject: subject != null ? String(subject).trim() : '',
+      courseNumber: courseNumber != null ? String(courseNumber).trim() : '',
+    },
+  }
+}
+
 router.use(authRequired, requireRole('student'))
 
 router.post('/find-group', async (req, res, next) => {
   try {
-    const { course } = req.body ?? {}
-    if (!course?.subject?.trim() || !course?.courseNumber?.trim()) {
+    const payload = normalizeFindGroupBody(req.body ?? {})
+    const { course } = payload
+
+    if (!course.subject || !course.courseNumber) {
       throw validationError('course with subject and courseNumber is required')
     }
 
     const io = req.app.get('io')
-    const result = await runMatchingForUser(req.user, req.body ?? {}, io)
+    const result = await runMatchingForUser(req.user, payload, io)
 
     if (result.status === 'completed') {
       res.status(200).json(result)
       return
     }
-    if (result.status === 'waiting') {
-      res.status(202).json(result)
-      return
-    }
+
     res.status(202).json(result)
   } catch (error) {
     next(error)

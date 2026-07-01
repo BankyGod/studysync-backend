@@ -21,6 +21,130 @@ import { computeReliabilityBatch, formatReliability } from './reliabilityService
 
 const MATCHING_STEPS = ['course', 'preferences', 'compatibility', 'searching', 'finalizing']
 const STEP_PROGRESS = [20, 40, 65, 85, 100]
+const MATCHING_STEP_DELAY_MS = 250
+
+function parseAvailability(value) {
+  if (!value) return []
+  if (Array.isArray(value)) return value
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+function normalizeCourseInput(course = {}) {
+  const subject = course.subject ?? course.courseSubject ?? course.course_subject
+  const courseNumber =
+    course.courseNumber ?? course.course_number ?? course.number ?? course.code
+
+  return {
+    subject: subject != null ? String(subject).trim() : '',
+    courseNumber: courseNumber != null ? String(courseNumber).trim() : '',
+  }
+}
+
+async function ensureUserCourseEnrolled(userId, subject, courseNumber) {
+  const existing = await UserCourse.findOne({
+    user_id: userId,
+    subject,
+    course_number: courseNumber,
+  }).lean()
+
+  if (existing) return
+
+  const primaryCount = await UserCourse.countDocuments({ user_id: userId, is_primary: 1 })
+
+  await UserCourse.create({
+    id: uuid(),
+    user_id: userId,
+    subject,
+    course_number: courseNumber,
+    is_primary: primaryCount === 0 ? 1 : 0,
+  })
+}
+
+async function findOrCreateGroup(subject, courseNumber) {
+  let group = await StudyGroup.findOne({ slug: courseToSlug(subject, courseNumber) }).lean()
+  if (group) return group
+
+  const now = new Date().toISOString()
+  const id = uuid()
+
+  try {
+    await StudyGroup.create({
+      id,
+      slug: courseToSlug(subject, courseNumber),
+      title: buildGroupTitle(subject, courseNumber),
+      subject,
+      course_number: courseNumber,
+      created_at: now,
+    })
+  } catch (error) {
+    if (error?.code === 11000) {
+      group = await StudyGroup.findOne({ slug: courseToSlug(subject, courseNumber) }).lean()
+      if (group) return group
+    }
+    throw error
+  }
+
+  return StudyGroup.findOne({ id }).lean()
+}
+
+async function completeMatchingJob({ jobId, user, subject, courseNumber, studyPreferences, io }) {
+  let group = await findBestGroup(subject, courseNumber, studyPreferences.groupSize)
+  if (!group) {
+    group = await findOrCreateGroup(subject, courseNumber)
+  }
+
+  await assertGroupHasSpace(group.id, studyPreferences.groupSize)
+  await addMemberToGroup(group.id, user)
+
+  const completedAt = new Date().toISOString()
+  await MatchingJob.updateOne(
+    { id: jobId },
+    {
+      status: 'completed',
+      progress: 100,
+      current_step: 'finalizing',
+      result_group_id: group.id,
+      completed_at: completedAt,
+    },
+  )
+
+  const match = await buildMatchPayload(group, user.id)
+  const result = { jobId, status: 'completed', progress: 100, currentStep: 'finalizing', match }
+
+  if (io) {
+    io.to(`user:${user.id}`).emit('matching:complete', { jobId, match })
+  }
+
+  return result
+}
+
+async function failMatchingJob(jobId, userId, error, io) {
+  const message = error?.message || 'Matching failed'
+  await MatchingJob.updateOne(
+    { id: jobId },
+    {
+      status: 'failed',
+      error_message: message,
+      error_code: error?.code || 'MATCHING_FAILED',
+      completed_at: new Date().toISOString(),
+    },
+  )
+
+  if (io) {
+    io.to(`user:${userId}`).emit('matching:failed', { jobId, message })
+  }
+}
 
 export async function getGroupMembers(groupId) {
   const members = await GroupMember.find({ group_id: groupId }).lean()
@@ -67,7 +191,8 @@ export async function buildMatchPayload(group, userId) {
 
 async function computeMatchMetrics(userId, groupId, payloadAvailability) {
   const userProfile = await OnboardingProfile.findOne({ user_id: userId }).lean()
-  const userSlots = payloadAvailability ?? (userProfile ? JSON.parse(userProfile.availability) : [])
+  const userSlots =
+    payloadAvailability ?? (userProfile ? parseAvailability(userProfile.availability) : [])
 
   const otherMembers = await GroupMember.find({ group_id: groupId, user_id: { $ne: userId } }).lean()
   const profiles = await OnboardingProfile.find({
@@ -76,7 +201,7 @@ async function computeMatchMetrics(userId, groupId, payloadAvailability) {
 
   let bestOverlap = 0
   profiles.forEach((p) => {
-    const slots = JSON.parse(p.availability)
+    const slots = parseAvailability(p.availability)
     const overlap = slots.filter((s) => userSlots.includes(s)).length
     bestOverlap = Math.max(bestOverlap, overlap)
   })
@@ -119,23 +244,7 @@ async function findBestGroup(subject, courseNumber, groupSize) {
 }
 
 async function createGroup(subject, courseNumber) {
-  const slug = courseToSlug(subject, courseNumber)
-  const existing = await StudyGroup.findOne({ slug }).lean()
-  if (existing) return existing
-
-  const now = new Date().toISOString()
-  const id = uuid()
-
-  await StudyGroup.create({
-    id,
-    slug,
-    title: buildGroupTitle(subject.trim(), courseNumber.trim()),
-    subject: subject.trim(),
-    course_number: courseNumber.trim(),
-    created_at: now,
-  })
-
-  return StudyGroup.findOne({ id }).lean()
+  return findOrCreateGroup(subject.trim(), courseNumber.trim())
 }
 
 async function addMemberToGroup(groupId, user) {
@@ -184,16 +293,6 @@ async function assertGroupHasSpace(groupId, groupSize = 'medium') {
   }
 }
 
-function buildWaitingResult(jobId) {
-  return {
-    jobId,
-    status: 'waiting',
-    errorCode: 'NO_ENROLLED_STUDENTS',
-    progress: 20,
-    currentStep: 'course',
-  }
-}
-
 export async function leaveGroup(userId, groupSlug) {
   const group = await StudyGroup.findOne({ slug: groupSlug }).lean()
   if (!group) {
@@ -231,44 +330,21 @@ export async function joinGroup(user, groupSlug, studyPreferences = { groupSize:
 
 export async function runMatchingForUser(user, payload, io) {
   const profile = await loadProfile(user.id)
-  const course = payload.course ?? profile?.courses?.[0]
+  const normalizedCourse = normalizeCourseInput(payload.course ?? profile?.courses?.[0])
 
-  if (!course?.subject?.trim() || !course?.courseNumber?.trim()) {
+  if (!normalizedCourse.subject || !normalizedCourse.courseNumber) {
     throw validationError('course with subject and courseNumber is required')
   }
 
-  const subject = course.subject.trim()
-  const courseNumber = course.courseNumber.trim()
+  const subject = normalizedCourse.subject
+  const courseNumber = normalizedCourse.courseNumber
 
   await assertNotInCourseGroup(user.id, subject, courseNumber)
+  await ensureUserCourseEnrolled(user.id, subject, courseNumber)
 
   const studyPreferences = payload.studyPreferences ?? profile?.studyPreferences ?? { groupSize: 'medium' }
   const jobId = uuid()
   const now = new Date().toISOString()
-
-  const otherEnrolled = await countOtherEnrolledStudents(subject, courseNumber, user.id)
-  if (otherEnrolled === 0) {
-    await MatchingJob.create({
-      id: jobId,
-      user_id: user.id,
-      course_subject: subject,
-      course_number: courseNumber,
-      status: 'waiting',
-      progress: 20,
-      current_step: 'course',
-      error_code: 'NO_ENROLLED_STUDENTS',
-      created_at: now,
-    })
-
-    const waiting = buildWaitingResult(jobId)
-    if (io) {
-      io.to(`user:${user.id}`).emit('matching:progress', {
-        ...waiting,
-        status: 'waiting',
-      })
-    }
-    return waiting
-  }
 
   await MatchingJob.create({
     id: jobId,
@@ -296,46 +372,26 @@ export async function runMatchingForUser(user, payload, io) {
     }
   }
 
-  return new Promise((resolve) => {
-    let step = 0
-    const interval = setInterval(async () => {
+  try {
+    for (let step = 0; step < MATCHING_STEPS.length; step += 1) {
       await emitProgress(step)
-      step += 1
-
-      if (step >= MATCHING_STEPS.length) {
-        clearInterval(interval)
-
-        let group = await findBestGroup(subject, courseNumber, studyPreferences.groupSize)
-        if (!group) {
-          group = await createGroup(subject, courseNumber)
-        }
-
-        await assertGroupHasSpace(group.id, studyPreferences.groupSize)
-        await addMemberToGroup(group.id, user)
-
-        const completedAt = new Date().toISOString()
-        await MatchingJob.updateOne(
-          { id: jobId },
-          {
-            status: 'completed',
-            progress: 100,
-            current_step: 'finalizing',
-            result_group_id: group.id,
-            completed_at: completedAt,
-          },
-        )
-
-        const match = await buildMatchPayload(group, user.id)
-        const result = { jobId, status: 'completed', progress: 100, currentStep: 'finalizing', match }
-
-        if (io) {
-          io.to(`user:${user.id}`).emit('matching:complete', { jobId, match })
-        }
-
-        resolve(result)
+      if (step < MATCHING_STEPS.length - 1) {
+        await sleep(MATCHING_STEP_DELAY_MS)
       }
-    }, 400)
-  })
+    }
+
+    return await completeMatchingJob({
+      jobId,
+      user,
+      subject,
+      courseNumber,
+      studyPreferences,
+      io,
+    })
+  } catch (error) {
+    await failMatchingJob(jobId, user.id, error, io)
+    throw error
+  }
 }
 
 export async function getMatchingJob(jobId, userId) {
