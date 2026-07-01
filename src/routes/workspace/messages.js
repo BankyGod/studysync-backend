@@ -18,11 +18,12 @@ import {
   formatFileEntry,
   isListableSharedFile,
   newFileId,
+  podFilesDir,
   sanitizeFileName,
-  sharedStorageDir,
   validateSharedUpload,
   validateVoiceUpload,
   voiceStorageDir,
+  normalizeMimeType,
 } from '../../services/workspaceFileService.js'
 
 const router = Router({ mergeParams: true })
@@ -51,7 +52,7 @@ function createMessageUpload() {
         const dir =
           type === 'voice'
             ? voiceStorageDir(config.uploadsDir, req.group.slug)
-            : sharedStorageDir(config.uploadsDir, req.group.slug)
+            : podFilesDir(config.uploadsDir, req.group.slug)
         fs.mkdirSync(dir, { recursive: true })
         cb(null, dir)
       },
@@ -73,9 +74,15 @@ function createMessageUpload() {
         req.pendingUploadFileId = fileId
         cb(
           null,
-          path.basename(
-            buildSharedStoragePath(config.uploadsDir, req.group.slug, fileId, file.originalname),
-          ),
+            path.basename(
+              buildSharedStoragePath(
+                config.uploadsDir,
+                req.group.slug,
+                fileId,
+                file.originalname,
+                file.mimetype,
+              ),
+            ),
         )
       },
     }),
@@ -241,6 +248,7 @@ router.post('/', uploadRateLimit, parseMessageUpload, async (req, res, next) => 
 
       const fileId = req.pendingUploadFileId ?? newFileId()
       const safeName = sanitizeFileName(req.file.originalname)
+      const fileType = normalizeMimeType(req.file.mimetype) || req.file.mimetype
       const content = `Shared a file: ${safeName}`
 
       session.startTransaction()
@@ -253,7 +261,7 @@ router.post('/', uploadRateLimit, parseMessageUpload, async (req, res, next) => 
             uploaded_by_id: req.user.id,
             file_name: safeName,
             file_size: req.file.size,
-            file_type: req.file.mimetype,
+            file_type: fileType,
             storage_key: req.file.path,
             source: 'chat',
             purpose: 'chat_attachment',
@@ -285,7 +293,7 @@ router.post('/', uploadRateLimit, parseMessageUpload, async (req, res, next) => 
           id: fileId,
           file_name: safeName,
           file_size: req.file.size,
-          file_type: req.file.mimetype,
+          file_type: fileType,
           uploaded_by_id: req.user.id,
           uploaded_at: now,
           source: 'chat',

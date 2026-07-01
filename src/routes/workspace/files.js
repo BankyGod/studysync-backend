@@ -15,8 +15,9 @@ import {
   formatFileEntry,
   isListableSharedFile,
   newFileId,
+  normalizeMimeType,
+  podFilesDir,
   sanitizeFileName,
-  sharedStorageDir,
   validateSharedUpload,
 } from '../../services/workspaceFileService.js'
 
@@ -26,12 +27,25 @@ const uploadRateLimit = createUploadRateLimiter({ maxUploads: 20 })
 const upload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => {
-      cb(null, sharedStorageDir(config.uploadsDir, req.group.slug))
+      const dir = podFilesDir(config.uploadsDir, req.group.slug)
+      fs.mkdirSync(dir, { recursive: true })
+      cb(null, dir)
     },
     filename: (req, file, cb) => {
       const fileId = newFileId()
       req.pendingUploadFileId = fileId
-      cb(null, path.basename(buildSharedStoragePath(config.uploadsDir, req.group.slug, fileId, file.originalname)))
+      cb(
+        null,
+        path.basename(
+          buildSharedStoragePath(
+            config.uploadsDir,
+            req.group.slug,
+            fileId,
+            file.originalname,
+            file.mimetype,
+          ),
+        ),
+      )
     },
   }),
   limits: { fileSize: 10 * 1024 * 1024 },
@@ -75,6 +89,7 @@ router.post('/', uploadRateLimit, upload.single('file'), async (req, res, next) 
 
     const fileId = req.pendingUploadFileId ?? newFileId()
     const safeName = sanitizeFileName(req.file.originalname)
+    const fileType = normalizeMimeType(req.file.mimetype) || req.file.mimetype
     const now = new Date().toISOString()
 
     await StoredFile.create({
@@ -83,7 +98,7 @@ router.post('/', uploadRateLimit, upload.single('file'), async (req, res, next) 
       uploaded_by_id: req.user.id,
       file_name: safeName,
       file_size: req.file.size,
-      file_type: req.file.mimetype,
+      file_type: fileType,
       storage_key: req.file.path,
       source: 'files',
       purpose: 'shared',
@@ -95,7 +110,7 @@ router.post('/', uploadRateLimit, upload.single('file'), async (req, res, next) 
         id: fileId,
         file_name: safeName,
         file_size: req.file.size,
-        file_type: req.file.mimetype,
+        file_type: fileType,
         uploaded_by_id: req.user.id,
         uploaded_at: now,
         source: 'files',

@@ -46,13 +46,18 @@ Copy `.env.example` to `.env` and adjust if needed:
 
 ## Workspace files
 
-Chat attachments and Files tab uploads share one `stored_files` record per binary (`source`: `chat` | `files`). Both use `GET /api/workspaces/{groupId}/files` and the same download URL.
+Chat attachments and Files tab uploads share one pod folder and one `stored_files` row per file:
 
-| Action | Behavior |
-|--------|----------|
-| Delete chat message | Message removed; file stays in the pod Files list |
-| Delete file | File removed; chat message remains; download returns `404` |
-| Voice message | Chat-only storage; never listed under Files |
+```
+uploads/{groupSlug}/files/{fileId}.ext
+```
+
+| Upload path | DB `source` | Chat message |
+|-------------|-------------|--------------|
+| `POST .../messages` (`type=attachment`) | `chat` | Yes |
+| `POST .../files` | `files` | No |
+
+Both appear in **`GET /workspaces/:groupId/files`**. Voice notes stay chat-only under `uploads/{groupSlug}/voice/`.
 
 ## Production
 

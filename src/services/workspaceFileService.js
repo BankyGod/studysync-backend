@@ -20,6 +20,9 @@ const ALLOWED_SHARED_EXTENSIONS = new Set([
   '.png',
   '.gif',
   '.webp',
+  '.heic',
+  '.heif',
+  '.bmp',
 ])
 
 const ALLOWED_SHARED_MIME_TYPES = new Set([
@@ -35,6 +38,9 @@ const ALLOWED_SHARED_MIME_TYPES = new Set([
   'image/png',
   'image/gif',
   'image/webp',
+  'image/heic',
+  'image/heif',
+  'image/bmp',
 ])
 
 const ALLOWED_VOICE_MIME_TYPES = new Set([
@@ -57,20 +63,45 @@ export function sanitizeFileName(fileName) {
   return base.slice(0, 200) || 'file'
 }
 
+export function podFilesDir(uploadsDir, groupSlug) {
+  return path.join(uploadsDir, groupSlug, 'files')
+}
+
+/** @deprecated use podFilesDir */
 export function sharedStorageDir(uploadsDir, groupSlug) {
-  return path.join(uploadsDir, groupSlug, 'shared')
+  return podFilesDir(uploadsDir, groupSlug)
 }
 
 export function voiceStorageDir(uploadsDir, groupSlug) {
   return path.join(uploadsDir, groupSlug, 'voice')
 }
 
-export function buildSharedStoragePath(uploadsDir, groupSlug, fileId, originalName) {
-  const ext = path.extname(originalName).toLowerCase()
-  const safeExt = ALLOWED_SHARED_EXTENSIONS.has(ext) ? ext : ''
-  const dir = sharedStorageDir(uploadsDir, groupSlug)
+export function extensionFromMime(mimetype) {
+  const mime = normalizeMimeType(mimetype)
+  const map = {
+    'image/jpeg': '.jpg',
+    'image/jpg': '.jpg',
+    'image/png': '.png',
+    'image/gif': '.gif',
+    'image/webp': '.webp',
+    'image/heic': '.heic',
+    'image/heif': '.heif',
+    'image/bmp': '.bmp',
+    'application/pdf': '.pdf',
+    'text/plain': '.txt',
+  }
+  return map[mime] ?? ''
+}
+
+export function buildSharedStoragePath(uploadsDir, groupSlug, fileId, originalName, mimetype) {
+  let ext = path.extname(originalName).toLowerCase()
+  if (!ext || !ALLOWED_SHARED_EXTENSIONS.has(ext)) {
+    const fromMime = extensionFromMime(mimetype)
+    ext = ALLOWED_SHARED_EXTENSIONS.has(fromMime) ? fromMime : ''
+  }
+  const dir = podFilesDir(uploadsDir, groupSlug)
   fs.mkdirSync(dir, { recursive: true })
-  return path.join(dir, `${fileId}${safeExt}`)
+  return path.join(dir, `${fileId}${ext}`)
 }
 
 export function buildVoiceStoragePath(uploadsDir, groupSlug, messageId, originalName) {
@@ -89,7 +120,9 @@ export function validateSharedUpload(file) {
   }
 
   const ext = path.extname(file.originalname).toLowerCase()
-  const mimeAllowed = ALLOWED_SHARED_MIME_TYPES.has(file.mimetype)
+  const mime = normalizeMimeType(file.mimetype)
+  const mimeAllowed =
+    ALLOWED_SHARED_MIME_TYPES.has(mime) || mime.startsWith('image/') || mime === 'application/octet-stream'
   const extAllowed = ALLOWED_SHARED_EXTENSIONS.has(ext)
 
   if (!mimeAllowed && !extAllowed) {
@@ -137,7 +170,9 @@ export function normalizeFileSource(row) {
 
 export function isListableSharedFile(row) {
   const source = normalizeFileSource(row)
-  return source === 'chat' || source === 'files'
+  if (source === 'chat' || source === 'files') return true
+  // Legacy rows saved before source field existed
+  return row.purpose === 'shared' || row.purpose === 'chat_attachment'
 }
 
 export function downloadUrl(groupSlug, fileId) {
