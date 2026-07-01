@@ -29,6 +29,8 @@ const userProfileSchema = new mongoose.Schema(
     location: { type: String, default: '' },
     avatar_storage_key: { type: String, default: null },
     avatar_mime_type: { type: String, default: null },
+    avatar_data: { type: Buffer, default: null },
+    avatar_byte_length: { type: Number, default: 0 },
     updated_at: { type: String, required: true },
   },
   { collection: 'user_profiles', versionKey: false },

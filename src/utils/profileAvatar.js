@@ -5,7 +5,18 @@ import { config } from '../config.js'
 
 const AVATAR_URL_TTL_SEC = 30 * 24 * 60 * 60
 
-const ALLOWED_AVATAR_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
+const ALLOWED_AVATAR_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+  'image/heic',
+  'image/heif',
+])
+
+const AVATAR_PROFILE_FIELDS =
+  'avatar_mime_type avatar_storage_key avatar_byte_length avatar_data user_id'
 
 export function normalizeAvatarMimeType(mimetype) {
   return String(mimetype || '')
@@ -16,11 +27,14 @@ export function normalizeAvatarMimeType(mimetype) {
 
 export function isAllowedAvatarMimeType(mimetype) {
   const normalized = normalizeAvatarMimeType(mimetype)
-  return ALLOWED_AVATAR_MIME_TYPES.has(normalized)
+  return ALLOWED_AVATAR_MIME_TYPES.has(normalized) || normalized.startsWith('image/')
 }
 
-export function hasAvatarFile(profile) {
-  return Boolean(profile?.avatar_storage_key && fs.existsSync(profile.avatar_storage_key))
+export function hasAvatar(profile) {
+  if (!profile) return false
+  if ((profile.avatar_byte_length ?? 0) > 0) return true
+  if (profile.avatar_data?.length > 0) return true
+  return Boolean(profile.avatar_storage_key && fs.existsSync(profile.avatar_storage_key))
 }
 
 function avatarSig(userId, exp) {
@@ -52,14 +66,32 @@ export function signAvatarUrl(userId) {
 }
 
 export function avatarUrlForUser(userId, profile) {
-  if (!hasAvatarFile(profile)) {
+  if (!hasAvatar(profile)) {
     return undefined
   }
   return signAvatarUrl(userId)
 }
 
+export async function loadAvatarProfile(userId, { includeData = false } = {}) {
+  const query = UserProfile.findOne({ user_id: userId })
+  if (includeData) {
+    return query.select(AVATAR_PROFILE_FIELDS).lean()
+  }
+  return query.select('avatar_mime_type avatar_storage_key avatar_byte_length user_id').lean()
+}
+
+export function readAvatarBytes(profile) {
+  if (profile?.avatar_data?.length) {
+    return profile.avatar_data
+  }
+  if (profile?.avatar_storage_key && fs.existsSync(profile.avatar_storage_key)) {
+    return fs.readFileSync(profile.avatar_storage_key)
+  }
+  return null
+}
+
 export async function formatUserWithAvatar(user) {
-  const profile = await UserProfile.findOne({ user_id: user.id }).lean()
+  const profile = await loadAvatarProfile(user.id)
   const avatarUrl = avatarUrlForUser(user.id, profile)
 
   return {

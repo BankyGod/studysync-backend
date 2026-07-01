@@ -14,7 +14,11 @@ router.get('/', async (req, res, next) => {
   try {
     const members = await GroupMember.find({ group_id: req.group.id }).lean()
     const users = await User.find({ id: { $in: members.map((m) => m.user_id) } }).lean()
-    const profiles = await UserProfile.find({ user_id: { $in: members.map((m) => m.user_id) } }).lean()
+    const profiles = await UserProfile.find({ user_id: { $in: members.map((m) => m.user_id) } })
+      .select(
+        'user_id avatar_mime_type avatar_storage_key avatar_byte_length',
+      )
+      .lean()
     const userById = Object.fromEntries(users.map((u) => [u.id, u]))
     const profileByUserId = Object.fromEntries(profiles.map((p) => [p.user_id, p]))
     const memberIds = members.map((m) => m.user_id)

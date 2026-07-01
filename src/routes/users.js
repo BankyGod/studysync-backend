@@ -15,7 +15,9 @@ import {
   avatarUrlForUser,
   formatProfileResponse,
   isAllowedAvatarMimeType,
+  loadAvatarProfile,
   normalizeAvatarMimeType,
+  readAvatarBytes,
   verifyAvatarSig,
 } from '../utils/profileAvatar.js'
 import notificationsRouter from './notifications.js'
@@ -23,17 +25,24 @@ import notificationsRouter from './notifications.js'
 const router = Router()
 const MAX_AVATAR_SIZE = 5 * 1024 * 1024
 
+function avatarExtension(originalName, mimetype) {
+  const ext = path.extname(originalName || '').toLowerCase()
+  if (ext) return ext
+  const mime = normalizeAvatarMimeType(mimetype)
+  if (mime === 'image/png') return '.png'
+  if (mime === 'image/webp') return '.webp'
+  if (mime === 'image/gif') return '.gif'
+  return '.jpg'
+}
+
+function avatarDiskPath(userId, originalName, mimetype) {
+  const dir = path.join(config.uploadsDir, 'avatars', userId)
+  fs.mkdirSync(dir, { recursive: true })
+  return path.join(dir, `${uuid()}${avatarExtension(originalName, mimetype)}`)
+}
+
 const upload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => {
-      const dir = path.join(config.uploadsDir, 'avatars', req.user.id)
-      fs.mkdirSync(dir, { recursive: true })
-      cb(null, dir)
-    },
-    filename: (req, file, cb) => {
-      cb(null, `${uuid()}${path.extname(file.originalname) || '.jpg'}`)
-    },
-  }),
+  storage: multer.memoryStorage(),
   limits: { fileSize: MAX_AVATAR_SIZE },
   fileFilter: (req, file, cb) => {
     if (!isAllowedAvatarMimeType(file.mimetype)) {
@@ -43,6 +52,16 @@ const upload = multer({
     cb(null, true)
   },
 })
+
+function parseAvatarUpload(req, res, next) {
+  upload.single('photo')(req, res, (err) => {
+    if (req.file || err) {
+      if (err) return next(err)
+      return next()
+    }
+    upload.single('avatar')(req, res, next)
+  })
+}
 
 async function authorizeAvatarAccess(req, targetUserId) {
   const { exp, sig } = req.query
@@ -78,14 +97,15 @@ router.get('/:userId/avatar', async (req, res, next) => {
       throw forbidden('You can only view avatars of members in your study groups')
     }
 
-    const profile = await UserProfile.findOne({ user_id: userId }).lean()
-    if (!profile?.avatar_storage_key || !fs.existsSync(profile.avatar_storage_key)) {
+    const profile = await loadAvatarProfile(userId, { includeData: true })
+    const bytes = readAvatarBytes(profile)
+    if (!bytes) {
       throw notFound('Profile photo not found')
     }
 
     res.setHeader('Content-Type', profile.avatar_mime_type || 'image/jpeg')
     res.setHeader('Cache-Control', 'private, max-age=3600')
-    fs.createReadStream(profile.avatar_storage_key).pipe(res)
+    res.send(bytes)
   } catch (error) {
     next(error)
   }
@@ -96,11 +116,29 @@ router.use(authRequired)
 router.use('/me/notifications', notificationsRouter)
 
 async function loadProfileOrFail(userId) {
-  const profile = await UserProfile.findOne({ user_id: userId }).lean()
+  const profile = await UserProfile.findOne({ user_id: userId })
+    .select('user_id full_name student_role primary_university secondary_university location updated_at avatar_mime_type avatar_storage_key avatar_byte_length')
+    .lean()
   if (!profile) {
     throw validationError('Profile not found')
   }
   return profile
+}
+
+async function ensureUserProfile(user, now = new Date().toISOString()) {
+  let profile = await UserProfile.findOne({ user_id: user.id }).lean()
+  if (profile) return profile
+
+  await UserProfile.create({
+    user_id: user.id,
+    full_name: `${user.first_name} ${user.last_name}`.trim(),
+    student_role: user.program ?? '',
+    primary_university: user.university ?? '',
+    location: '',
+    updated_at: now,
+  })
+
+  return UserProfile.findOne({ user_id: user.id }).lean()
 }
 
 async function assertCanViewUserReliability(viewerId, targetUserId, groupIdOrSlug) {
@@ -168,37 +206,40 @@ router.put('/me/profile', async (req, res, next) => {
   }
 })
 
-router.post('/me/avatar', upload.single('photo'), async (req, res, next) => {
+router.post('/me/avatar', parseAvatarUpload, async (req, res, next) => {
   try {
     if (!req.file) {
-      throw validationError('photo file is required')
+      throw validationError('photo file is required (multipart field: photo or avatar)')
     }
 
-    const profile = await loadProfileOrFail(req.user.id)
+    const profile = await ensureUserProfile(req.user)
+    const mimeType = normalizeAvatarMimeType(req.file.mimetype)
+    const diskPath = avatarDiskPath(req.user.id, req.file.originalname, mimeType)
+    const now = new Date().toISOString()
 
     if (profile.avatar_storage_key && fs.existsSync(profile.avatar_storage_key)) {
       fs.unlinkSync(profile.avatar_storage_key)
     }
 
-    const now = new Date().toISOString()
+    fs.writeFileSync(diskPath, req.file.buffer)
+
     await UserProfile.updateOne(
       { user_id: req.user.id },
       {
-        avatar_storage_key: req.file.path,
-        avatar_mime_type: normalizeAvatarMimeType(req.file.mimetype),
+        avatar_data: req.file.buffer,
+        avatar_byte_length: req.file.buffer.length,
+        avatar_storage_key: diskPath,
+        avatar_mime_type: mimeType,
         updated_at: now,
       },
     )
 
-    const updated = await loadProfileOrFail(req.user.id)
+    const updated = await loadAvatarProfile(req.user.id)
     res.json({
       avatarUrl: avatarUrlForUser(req.user.id, updated),
       updatedAt: now,
     })
   } catch (error) {
-    if (req.file?.path && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path)
-    }
     next(error)
   }
 })
@@ -215,6 +256,8 @@ router.delete('/me/avatar', async (req, res, next) => {
     await UserProfile.updateOne(
       { user_id: req.user.id },
       {
+        avatar_data: null,
+        avatar_byte_length: 0,
         avatar_storage_key: null,
         avatar_mime_type: null,
         updated_at: now,
@@ -248,7 +291,11 @@ router.get('/me/groups', async (req, res, next) => {
     )
 
     const memberUsers = await User.find({ id: { $in: [...memberUserIds] } }).lean()
-    const profiles = await UserProfile.find({ user_id: { $in: [...memberUserIds] } }).lean()
+    const profiles = await UserProfile.find({ user_id: { $in: [...memberUserIds] } })
+      .select(
+        'user_id full_name student_role primary_university secondary_university location updated_at avatar_mime_type avatar_storage_key avatar_byte_length',
+      )
+      .lean()
     const userById = Object.fromEntries(memberUsers.map((u) => [u.id, u]))
     const profileByUserId = Object.fromEntries(profiles.map((p) => [p.user_id, p]))
 

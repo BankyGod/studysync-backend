@@ -71,6 +71,8 @@ The app is ready for platforms like Render, Railway, or Heroku:
   - `CORS_ORIGIN` — your deployed frontend URL (e.g. `https://your-app.vercel.app`)
   - `PUBLIC_API_URL` — your deployed API URL (e.g. `https://your-api.onrender.com`) so profile photos load after login
 
+Profile photos are stored in **MongoDB** (`user_profiles.avatar_data`) and cached on disk under `uploads/avatars/{userId}/`.
+
 Render does **not** read your local `.env` file. Add these under **Environment** in the Render dashboard, then redeploy.
 
 **Render settings:**
