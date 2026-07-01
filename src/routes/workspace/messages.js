@@ -28,42 +28,87 @@ import {
 const router = Router({ mergeParams: true })
 const uploadRateLimit = createUploadRateLimiter({ maxUploads: 20 })
 
-function createSharedUpload() {
+function resolveMessageType(req, file) {
+  const explicit = String(req.query.type || req.body?.type || '').toLowerCase()
+  if (explicit === 'voice' || explicit === 'attachment' || explicit === 'text') {
+    return explicit
+  }
+  if (file) {
+    const mime = String(file.mimetype || '').toLowerCase()
+    if (mime.startsWith('audio/')) {
+      return 'voice'
+    }
+    return 'attachment'
+  }
+  return 'text'
+}
+
+function createMessageUpload() {
   return multer({
     storage: multer.diskStorage({
       destination: (req, file, cb) => {
-        fs.mkdirSync(sharedStorageDir(config.uploadsDir, req.group.slug), { recursive: true })
-        cb(null, sharedStorageDir(config.uploadsDir, req.group.slug))
+        const type = resolveMessageType(req, file)
+        const dir =
+          type === 'voice'
+            ? voiceStorageDir(config.uploadsDir, req.group.slug)
+            : sharedStorageDir(config.uploadsDir, req.group.slug)
+        fs.mkdirSync(dir, { recursive: true })
+        cb(null, dir)
       },
       filename: (req, file, cb) => {
-        const fileId = newFileId()
+        const type = resolveMessageType(req, file)
+        if (type === 'voice') {
+          const messageId = req.pendingMessageId ?? uuid()
+          req.pendingMessageId = messageId
+          cb(
+            null,
+            path.basename(
+              buildVoiceStoragePath(config.uploadsDir, req.group.slug, messageId, file.originalname),
+            ),
+          )
+          return
+        }
+
+        const fileId = req.pendingUploadFileId ?? newFileId()
         req.pendingUploadFileId = fileId
-        cb(null, path.basename(buildSharedStoragePath(config.uploadsDir, req.group.slug, fileId, file.originalname)))
+        cb(
+          null,
+          path.basename(
+            buildSharedStoragePath(config.uploadsDir, req.group.slug, fileId, file.originalname),
+          ),
+        )
       },
     }),
     limits: { fileSize: 10 * 1024 * 1024 },
   })
 }
 
-function createVoiceUpload() {
-  return multer({
-    storage: multer.diskStorage({
-      destination: (req, file, cb) => {
-        fs.mkdirSync(voiceStorageDir(config.uploadsDir, req.group.slug), { recursive: true })
-        cb(null, voiceStorageDir(config.uploadsDir, req.group.slug))
-      },
-      filename: (req, file, cb) => {
-        const messageId = req.pendingMessageId ?? uuid()
-        req.pendingMessageId = messageId
-        cb(null, path.basename(buildVoiceStoragePath(config.uploadsDir, req.group.slug, messageId, file.originalname)))
-      },
-    }),
-    limits: { fileSize: 2 * 1024 * 1024 },
+const messageUpload = createMessageUpload()
+
+function parseMessageUpload(req, res, next) {
+  if (!req.is('multipart/form-data')) {
+    return next()
+  }
+
+  return messageUpload.single('file')(req, res, (err) => {
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return next(
+          validationError(
+            resolveMessageType(req, req.file) === 'voice'
+              ? 'Voice file too large (max 2MB)'
+              : 'File too large (max 10MB)',
+          ),
+        )
+      }
+      return next(validationError(err.message))
+    }
+    if (err) {
+      return next(err)
+    }
+    return next()
   })
 }
-
-const sharedUpload = createSharedUpload()
-const voiceUpload = createVoiceUpload()
 
 router.use(authRequired, requireGroupMember)
 
@@ -165,21 +210,12 @@ router.get('/', async (req, res, next) => {
   }
 })
 
-router.post('/', uploadRateLimit, (req, res, next) => {
-  const type = req.body?.type || 'text'
-  if (type === 'voice') {
-    return voiceUpload.single('file')(req, res, next)
-  }
-  if (type === 'attachment') {
-    return sharedUpload.single('file')(req, res, next)
-  }
-  return next()
-}, async (req, res, next) => {
+router.post('/', uploadRateLimit, parseMessageUpload, async (req, res, next) => {
   const session = await mongoose.startSession()
   let uploadedPath = req.file?.path ?? null
 
   try {
-    const type = req.body.type || 'text'
+    const type = resolveMessageType(req, req.file)
     const now = new Date().toISOString()
     const messageId = req.pendingMessageId ?? uuid()
 
@@ -272,7 +308,7 @@ router.post('/', uploadRateLimit, (req, res, next) => {
         throw validationError(validationErrorMessage)
       }
 
-      const durationSec = Number(req.body.durationSec) || 0
+      const durationSec = Number(req.body.durationSec ?? req.body.duration_sec ?? req.body.duration) || 0
       if (durationSec > MAX_VOICE_DURATION_SEC) {
         throw validationError(`Voice notes can be up to ${MAX_VOICE_DURATION_SEC} seconds`)
       }
@@ -288,7 +324,7 @@ router.post('/', uploadRateLimit, (req, res, next) => {
         voice_duration_sec: durationSec,
         voice_storage_key: req.file.path,
         voice_file_name: safeName,
-        voice_file_type: req.file.mimetype,
+        voice_file_type: req.file.mimetype?.split(';')[0]?.trim() || req.file.mimetype,
         voice_file_size: req.file.size,
         sent_at: now,
       })

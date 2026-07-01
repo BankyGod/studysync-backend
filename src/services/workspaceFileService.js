@@ -42,8 +42,11 @@ const ALLOWED_VOICE_MIME_TYPES = new Set([
   'audio/ogg',
   'audio/mpeg',
   'audio/mp4',
+  'audio/mp3',
   'audio/wav',
   'audio/x-wav',
+  'audio/x-m4a',
+  'audio/aac',
 ])
 
 export function sanitizeFileName(fileName) {
@@ -96,6 +99,13 @@ export function validateSharedUpload(file) {
   return null
 }
 
+export function normalizeMimeType(mimetype) {
+  return String(mimetype || '')
+    .split(';')[0]
+    .trim()
+    .toLowerCase()
+}
+
 export function validateVoiceUpload(file) {
   if (!file) {
     return 'Voice file is required'
@@ -103,10 +113,19 @@ export function validateVoiceUpload(file) {
   if (file.size > MAX_VOICE_FILE_SIZE) {
     return 'Voice file too large (max 2MB)'
   }
-  if (!ALLOWED_VOICE_MIME_TYPES.has(file.mimetype) && !file.mimetype.startsWith('audio/')) {
-    return 'Invalid voice file type'
+
+  const mime = normalizeMimeType(file.mimetype)
+  const ext = path.extname(file.originalname).toLowerCase()
+  const voiceExtensions = new Set(['.webm', '.ogg', '.m4a', '.mp4', '.wav', '.mpeg', '.mp3'])
+
+  if (ALLOWED_VOICE_MIME_TYPES.has(mime) || mime.startsWith('audio/')) {
+    return null
   }
-  return null
+  if (voiceExtensions.has(ext)) {
+    return null
+  }
+
+  return 'Invalid voice file type'
 }
 
 export function normalizeFileSource(row) {

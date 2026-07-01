@@ -64,6 +64,7 @@ The app is ready for platforms like Render, Railway, or Heroku:
   - `MONGODB_URI` — your Atlas connection string (include `/studysync` database name)
   - `JWT_SECRET` — a long random secret
   - `CORS_ORIGIN` — your deployed frontend URL (e.g. `https://your-app.vercel.app`)
+  - `PUBLIC_API_URL` — your deployed API URL (e.g. `https://your-api.onrender.com`) so profile photos load after login
 
 Render does **not** read your local `.env` file. Add these under **Environment** in the Render dashboard, then redeploy.
 

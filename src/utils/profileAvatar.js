@@ -1,8 +1,61 @@
+import crypto from 'crypto'
+import fs from 'fs'
 import { UserProfile } from '../db/models.js'
+import { config } from '../config.js'
+
+const AVATAR_URL_TTL_SEC = 30 * 24 * 60 * 60
+
+const ALLOWED_AVATAR_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
+
+export function normalizeAvatarMimeType(mimetype) {
+  return String(mimetype || '')
+    .split(';')[0]
+    .trim()
+    .toLowerCase()
+}
+
+export function isAllowedAvatarMimeType(mimetype) {
+  const normalized = normalizeAvatarMimeType(mimetype)
+  return ALLOWED_AVATAR_MIME_TYPES.has(normalized)
+}
+
+export function hasAvatarFile(profile) {
+  return Boolean(profile?.avatar_storage_key && fs.existsSync(profile.avatar_storage_key))
+}
+
+function avatarSig(userId, exp) {
+  return crypto.createHmac('sha256', config.jwtSecret).update(`${userId}:${exp}`).digest('hex')
+}
+
+export function verifyAvatarSig(userId, exp, sig) {
+  const expNum = Number(exp)
+  if (!Number.isFinite(expNum) || expNum < Math.floor(Date.now() / 1000)) {
+    return false
+  }
+  if (typeof sig !== 'string' || !sig) {
+    return false
+  }
+
+  const expected = avatarSig(userId, expNum)
+  if (sig.length !== expected.length) {
+    return false
+  }
+
+  return crypto.timingSafeEqual(Buffer.from(sig, 'utf8'), Buffer.from(expected, 'utf8'))
+}
+
+export function signAvatarUrl(userId) {
+  const exp = Math.floor(Date.now() / 1000) + AVATAR_URL_TTL_SEC
+  const sig = avatarSig(userId, exp)
+  const path = `/api/users/${userId}/avatar?exp=${exp}&sig=${sig}`
+  return config.publicApiUrl ? `${config.publicApiUrl}${path}` : path
+}
 
 export function avatarUrlForUser(userId, profile) {
-  if (!profile?.avatar_storage_key) return undefined
-  return `/api/users/${userId}/avatar`
+  if (!hasAvatarFile(profile)) {
+    return undefined
+  }
+  return signAvatarUrl(userId)
 }
 
 export async function formatUserWithAvatar(user) {

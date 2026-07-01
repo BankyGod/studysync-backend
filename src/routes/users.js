@@ -5,18 +5,23 @@ import multer from 'multer'
 import { v4 as uuid } from 'uuid'
 import { UserProfile, StudyGroup, GroupMember, User, Task } from '../db/models.js'
 import { config } from '../config.js'
-import { authRequired } from '../middleware/auth.js'
+import { authRequired, verifyToken } from '../middleware/auth.js'
 import { forbidden, notFound, validationError } from '../utils/errors.js'
 import { formatMember } from '../utils/serializers.js'
 import { pickGroupAccent } from '../utils/helpers.js'
 import { usersShareGroup } from '../services/matchingService.js'
 import { computeUserReliability, formatReliability } from '../services/reliabilityService.js'
-import { avatarUrlForUser, formatProfileResponse } from '../utils/profileAvatar.js'
+import {
+  avatarUrlForUser,
+  formatProfileResponse,
+  isAllowedAvatarMimeType,
+  normalizeAvatarMimeType,
+  verifyAvatarSig,
+} from '../utils/profileAvatar.js'
 import notificationsRouter from './notifications.js'
 
 const router = Router()
 const MAX_AVATAR_SIZE = 5 * 1024 * 1024
-const ALLOWED_AVATAR_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -31,12 +36,59 @@ const upload = multer({
   }),
   limits: { fileSize: MAX_AVATAR_SIZE },
   fileFilter: (req, file, cb) => {
-    if (!ALLOWED_AVATAR_TYPES.has(file.mimetype)) {
+    if (!isAllowedAvatarMimeType(file.mimetype)) {
       cb(new Error('Profile photo must be JPEG, PNG, WebP, or GIF'))
       return
     }
     cb(null, true)
   },
+})
+
+async function authorizeAvatarAccess(req, targetUserId) {
+  const { exp, sig } = req.query
+  if (verifyAvatarSig(targetUserId, exp, sig)) {
+    return true
+  }
+
+  const header = req.headers.authorization
+  if (!header?.startsWith('Bearer ')) {
+    return false
+  }
+
+  try {
+    const payload = verifyToken(header.slice(7))
+    if (payload.sub === targetUserId) {
+      return true
+    }
+    return usersShareGroup(payload.sub, targetUserId)
+  } catch {
+    return false
+  }
+}
+
+router.get('/:userId/avatar', async (req, res, next) => {
+  try {
+    const userId = req.params.userId === 'me' ? null : req.params.userId
+    if (!userId) {
+      throw validationError('Use /users/me/profile for your own avatar metadata')
+    }
+
+    const allowed = await authorizeAvatarAccess(req, userId)
+    if (!allowed) {
+      throw forbidden('You can only view avatars of members in your study groups')
+    }
+
+    const profile = await UserProfile.findOne({ user_id: userId }).lean()
+    if (!profile?.avatar_storage_key || !fs.existsSync(profile.avatar_storage_key)) {
+      throw notFound('Profile photo not found')
+    }
+
+    res.setHeader('Content-Type', profile.avatar_mime_type || 'image/jpeg')
+    res.setHeader('Cache-Control', 'private, max-age=3600')
+    fs.createReadStream(profile.avatar_storage_key).pipe(res)
+  } catch (error) {
+    next(error)
+  }
 })
 
 router.use(authRequired)
@@ -133,7 +185,7 @@ router.post('/me/avatar', upload.single('photo'), async (req, res, next) => {
       { user_id: req.user.id },
       {
         avatar_storage_key: req.file.path,
-        avatar_mime_type: req.file.mimetype,
+        avatar_mime_type: normalizeAvatarMimeType(req.file.mimetype),
         updated_at: now,
       },
     )
@@ -170,30 +222,6 @@ router.delete('/me/avatar', async (req, res, next) => {
     )
 
     res.status(204).send()
-  } catch (error) {
-    next(error)
-  }
-})
-
-router.get('/:userId/avatar', async (req, res, next) => {
-  try {
-    const userId = req.params.userId === 'me' ? req.user.id : req.params.userId
-
-    if (userId !== req.user.id) {
-      const sharesGroup = await usersShareGroup(req.user.id, userId)
-      if (!sharesGroup) {
-        throw forbidden('You can only view avatars of members in your study groups')
-      }
-    }
-
-    const profile = await UserProfile.findOne({ user_id: userId }).lean()
-    if (!profile?.avatar_storage_key || !fs.existsSync(profile.avatar_storage_key)) {
-      throw notFound('Profile photo not found')
-    }
-
-    res.setHeader('Content-Type', profile.avatar_mime_type || 'image/jpeg')
-    res.setHeader('Cache-Control', 'private, max-age=3600')
-    fs.createReadStream(profile.avatar_storage_key).pipe(res)
   } catch (error) {
     next(error)
   }

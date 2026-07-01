@@ -54,6 +54,14 @@ export const config = {
     .filter(Boolean),
   mongoUri,
   uploadsDir: path.resolve(backendRoot, process.env.UPLOADS_DIR || './uploads'),
+  publicApiUrl: (process.env.PUBLIC_API_URL || '').trim().replace(/\/$/, ''),
+}
+
+if (isProduction && !config.publicApiUrl) {
+  console.warn(
+    'PUBLIC_API_URL is not set. Avatar image URLs may not load on a separate frontend host. ' +
+      'Set PUBLIC_API_URL to your API base URL (e.g. https://your-api.onrender.com).',
+  )
 }
 
 export function isAllowedCorsOrigin(origin) {
