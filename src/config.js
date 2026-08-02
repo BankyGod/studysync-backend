@@ -48,9 +48,9 @@ export const config = {
   port: Number(process.env.PORT) || 3000,
   jwtSecret: process.env.JWT_SECRET || 'dev-secret-change-in-production',
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
-  corsOrigins: (process.env.CORS_ORIGIN || 'http://localhost:5173')
+  corsOrigins: (process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:3000')
     .split(',')
-    .map((origin) => origin.trim())
+    .map((origin) => origin.trim().replace(/\/$/, ''))
     .filter(Boolean),
   mongoUri,
   uploadsDir: path.resolve(backendRoot, process.env.UPLOADS_DIR || './uploads'),
@@ -66,5 +66,16 @@ if (isProduction && !config.publicApiUrl) {
 
 export function isAllowedCorsOrigin(origin) {
   if (!origin) return true
-  return config.corsOrigins.includes(origin)
+  const normalizedOrigin = origin.trim().replace(/\/$/, '')
+
+  if (config.corsOrigins.includes('*') || config.corsOrigins.includes(normalizedOrigin)) {
+    return true
+  }
+
+  // Allow local development frontends (e.g. http://localhost:5173, http://127.0.0.1:5173)
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(normalizedOrigin)) {
+    return true
+  }
+
+  return false
 }
