@@ -1,7 +1,15 @@
+import dns from 'node:dns'
 import mongoose from 'mongoose'
 import { config } from '../config.js'
 import { Task } from './models.js'
 import * as models from './models.js'
+
+// Set public DNS fallback for MongoDB Atlas SRV resolution
+try {
+  dns.setServers(['8.8.8.8', '1.1.1.1'])
+} catch (err) {
+  // Ignore if DNS server configuration fails
+}
 
 export { models }
 export * from './models.js'
