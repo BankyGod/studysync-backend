@@ -970,6 +970,201 @@ paths:
       responses:
         '201':
           description: Created
+  /workspaces/{groupId}/calls/active:
+    get:
+      tags: [Workspaces]
+      summary: Get the active pod video call (or null)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+  /workspaces/{groupId}/calls:
+    post:
+      tags: [Workspaces]
+      summary: Start a pod video call (Jitsi room) and post a chat message
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+      responses:
+        '201':
+          description: Call started
+        '409':
+          description: A call is already active
+  /workspaces/{groupId}/calls/{callId}:
+    get:
+      tags: [Workspaces]
+      summary: Get a video call by id
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: callId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+  /workspaces/{groupId}/calls/{callId}/join:
+    post:
+      tags: [Workspaces]
+      summary: Join an active video call
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: callId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Joined
+  /workspaces/{groupId}/calls/{callId}/leave:
+    post:
+      tags: [Workspaces]
+      summary: Leave a video call
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: callId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Left
+  /workspaces/{groupId}/calls/{callId}/end:
+    post:
+      tags: [Workspaces]
+      summary: End an active video call
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: callId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Ended
+  /admin/dashboard:
+    get:
+      tags: [Admin]
+      summary: Admin portal home (overview + engagement + 7-day activity)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+  /admin/reports/overview:
+    get:
+      tags: [Admin]
+      summary: Platform totals report
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+  /admin/reports/engagement:
+    get:
+      tags: [Admin]
+      summary: Student engagement report
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+  /admin/reports/pods:
+    get:
+      tags: [Admin]
+      summary: Pod health report
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+  /admin/reports/reliability:
+    get:
+      tags: [Admin]
+      summary: Reliability leaderboard and at-risk students
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: OK
+  /admin/reports/courses:
+    get:
+      tags: [Admin]
+      summary: Courses breakdown report
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+  /admin/reports/activity:
+    get:
+      tags: [Admin]
+      summary: Activity over time
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 30
+      responses:
+        '200':
+          description: OK
   /admin/cohorts:
     get:
       tags: [Admin]
@@ -987,10 +1182,21 @@ paths:
       responses:
         '201':
           description: Created
+  /admin/users:
+    post:
+      tags: [Admin]
+      summary: Create instructor or admin account (admin role only)
+      security:
+        - bearerAuth: []
+      responses:
+        '201':
+          description: Created
+        '403':
+          description: Only admins can create staff accounts
   /admin/seed:
     post:
       tags: [Admin]
-      summary: Seed cohort students (admin only)
+      summary: Seed cohort students (dev tool)
       security:
         - bearerAuth: []
       responses:
@@ -999,7 +1205,7 @@ paths:
   /admin/matching/run:
     post:
       tags: [Admin]
-      summary: Run batch matching
+      summary: Run batch matching (stub)
       security:
         - bearerAuth: []
       responses:
@@ -1011,15 +1217,89 @@ paths:
       summary: List all groups
       security:
         - bearerAuth: []
+      parameters:
+        - name: cohortId
+          in: query
+          schema:
+            type: string
+        - name: subject
+          in: query
+          schema:
+            type: string
+        - name: courseNumber
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+  /admin/groups/{groupId}:
+    get:
+      tags: [Admin]
+      summary: Group detail with members and stats
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: string
       responses:
         '200':
           description: OK
   /admin/students:
     get:
       tags: [Admin]
-      summary: List students
+      summary: List students with search and filters
       security:
         - bearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+        - name: level
+          in: query
+          schema:
+            type: string
+        - name: program
+          in: query
+          schema:
+            type: string
+        - name: onboarding
+          in: query
+          schema:
+            type: boolean
+        - name: matched
+          in: query
+          schema:
+            type: boolean
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: OK
+  /admin/students/{userId}:
+    get:
+      tags: [Admin]
+      summary: Student detail
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
       responses:
         '200':
           description: OK

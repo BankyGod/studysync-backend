@@ -14,7 +14,7 @@ Table users {
   university varchar [not null]
   program varchar [not null]
   level varchar [not null, note: '100 | 200 | 300 | 400']
-  role varchar [not null, note: 'student | instructor']
+  role varchar [not null, note: 'student | instructor | admin']
   created_at varchar [not null, note: 'ISO-8601']
   updated_at varchar [not null, note: 'ISO-8601']
 }
@@ -123,7 +123,7 @@ Table messages {
   id varchar [primary key, note: 'MongoDB collection: messages']
   group_id varchar [not null]
   sender_id varchar [not null]
-  type varchar [not null, note: 'text | attachment | voice']
+  type varchar [not null, note: 'text | attachment | voice | call']
   content varchar [not null]
   file_id varchar [note: 'FK → stored_files when type = attachment']
   voice_duration_sec int
@@ -131,7 +131,23 @@ Table messages {
   voice_file_name varchar
   voice_file_type varchar
   voice_file_size int
+  call_id varchar [note: 'FK → video_calls when type = call']
   sent_at varchar [not null]
+}
+
+Table video_calls {
+  id varchar [primary key, note: 'MongoDB collection: video_calls']
+  group_id varchar [not null]
+  group_slug varchar [not null]
+  room_name varchar [not null]
+  join_url varchar [not null]
+  provider varchar [not null, note: 'jitsi']
+  status varchar [not null, note: 'active | ended']
+  started_by_id varchar [not null]
+  participant_ids varchar [note: 'JSON array of user ids']
+  started_at varchar [not null]
+  ended_at varchar
+  ended_by_id varchar
 }
 
 Table scheduled_sessions {

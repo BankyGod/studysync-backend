@@ -12,7 +12,7 @@ const userSchema = new mongoose.Schema(
     university: { type: String, required: true },
     program: { type: String, required: true },
     level: { type: String, enum: ['100', '200', '300', '400'], required: true },
-    role: { type: String, enum: ['student', 'instructor'], required: true },
+    role: { type: String, enum: ['student', 'instructor', 'admin'], required: true },
     created_at: { type: String, required: true },
     updated_at: { type: String, required: true },
   },
@@ -189,7 +189,7 @@ const messageSchema = new mongoose.Schema(
     id: { type: String, required: true, unique: true },
     group_id: { type: String, required: true, index: true },
     sender_id: { type: String, required: true },
-    type: { type: String, enum: ['text', 'attachment', 'voice'], required: true },
+    type: { type: String, enum: ['text', 'attachment', 'voice', 'call'], required: true },
     content: { type: String, required: true },
     file_id: { type: String, default: null },
     voice_duration_sec: { type: Number, default: null },
@@ -197,11 +197,31 @@ const messageSchema = new mongoose.Schema(
     voice_file_name: { type: String, default: null },
     voice_file_type: { type: String, default: null },
     voice_file_size: { type: Number, default: null },
+    call_id: { type: String, default: null },
     sent_at: { type: String, required: true },
   },
   { collection: 'messages', versionKey: false },
 )
 messageSchema.index({ group_id: 1, sent_at: 1 })
+
+const videoCallSchema = new mongoose.Schema(
+  {
+    id: { type: String, required: true, unique: true },
+    group_id: { type: String, required: true, index: true },
+    group_slug: { type: String, required: true },
+    room_name: { type: String, required: true },
+    join_url: { type: String, required: true },
+    provider: { type: String, enum: ['jitsi'], default: 'jitsi' },
+    status: { type: String, enum: ['active', 'ended'], required: true },
+    started_by_id: { type: String, required: true },
+    participant_ids: { type: [String], default: [] },
+    started_at: { type: String, required: true },
+    ended_at: { type: String, default: null },
+    ended_by_id: { type: String, default: null },
+  },
+  { collection: 'video_calls', versionKey: false },
+)
+videoCallSchema.index({ group_id: 1, status: 1 })
 
 const scheduledSessionSchema = new mongoose.Schema(
   {
@@ -250,5 +270,6 @@ export const TaskRegressRequest = TaskMoveRequest
 export const Notification = mongoose.model('Notification', notificationSchema)
 export const StoredFile = mongoose.model('StoredFile', storedFileSchema)
 export const Message = mongoose.model('Message', messageSchema)
+export const VideoCall = mongoose.model('VideoCall', videoCallSchema)
 export const ScheduledSession = mongoose.model('ScheduledSession', scheduledSessionSchema)
 export const MatchingJob = mongoose.model('MatchingJob', matchingJobSchema)

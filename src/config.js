@@ -55,6 +55,7 @@ export const config = {
   mongoUri,
   uploadsDir: path.resolve(backendRoot, process.env.UPLOADS_DIR || './uploads'),
   publicApiUrl: (process.env.PUBLIC_API_URL || '').trim().replace(/\/$/, ''),
+  jitsiDomain: (process.env.JITSI_DOMAIN || 'meet.jit.si').trim().replace(/^https?:\/\//, '').replace(/\/$/, ''),
 }
 
 if (isProduction && !config.publicApiUrl) {

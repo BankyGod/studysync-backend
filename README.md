@@ -36,8 +36,9 @@ Copy `.env.example` to `.env` and adjust if needed:
 1. `POST /api/auth/register` — create account
 2. `POST /api/onboarding/profile` — save learning profile
 3. `POST /api/matching/find-group` — get matched into a pod (only if not already in a group for that course)
-4. Use `/api/workspaces/{groupId}/*` for tasks, chat, files, sessions
+4. Use `/api/workspaces/{groupId}/*` for tasks, chat, files, sessions, **video calls**
 
+**Pod video calls:** members start a call from chat (`POST /workspaces/{groupId}/calls`). The API returns a Jitsi `joinUrl`; other members get Socket.IO `call:started` and can join the same room.
 **Changing groups:** you cannot search/match again while already in a group for the same course. Leave first, then join or match again:
 
 - `DELETE /api/matching/groups/{groupId}/leave` — leave your current group
@@ -68,10 +69,20 @@ The app is ready for platforms like Render, Railway, or Heroku:
 - **Required env vars on Render:**
   - `MONGODB_URI` — your Atlas connection string (include `/studysync` database name)
   - `JWT_SECRET` — a long random secret
-  - `CORS_ORIGIN` — your deployed frontend URL (e.g. `https://your-app.vercel.app`)
+  - `CORS_ORIGIN` — student app + admin subdomain, comma-separated (e.g. `https://app.onrender.com,https://admin.app.onrender.com`)
   - `PUBLIC_API_URL` — your deployed API URL (e.g. `https://your-api.onrender.com`) so profile photos load after login
 
 Profile photos are stored in **MongoDB** (`user_profiles.avatar_data`) and cached on disk under `uploads/avatars/{userId}/`.
+
+### Admin portal
+
+Admin APIs live under `/api/admin/*` (roles: `admin` or `instructor`). See [docs/ADMIN_PORTAL_API.md](docs/ADMIN_PORTAL_API.md).
+
+Bootstrap the first admin:
+
+```bash
+node scripts/create-admin.js --email admin@studysync.com --password "SecurePass1" --name "System Admin"
+```
 
 Render does **not** read your local `.env` file. Add these under **Environment** in the Render dashboard, then redeploy.
 
@@ -84,3 +95,5 @@ Render does **not** read your local `.env` file. Add these under **Environment**
 
 - `npm run dev` — start with auto-reload (`node --watch`)
 - `npm start` — production-style start
+- `node scripts/create-admin.js` — create/promote an admin user
+- `node scripts/reset-database.js` — wipe MongoDB + uploads (destructive)

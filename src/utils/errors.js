@@ -23,8 +23,8 @@ export function unauthorized(message = 'Unauthorized') {
   return new AppError(401, 'UNAUTHORIZED', message)
 }
 
-export function conflict(message) {
-  return new AppError(409, 'CONFLICT', message)
+export function conflict(message, details = null) {
+  return new AppError(409, 'CONFLICT', message, details)
 }
 
 export function alreadyInGroup(message = 'You are already in a study group for this course.') {

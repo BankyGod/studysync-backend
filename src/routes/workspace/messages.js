@@ -4,7 +4,7 @@ import { Router } from 'express'
 import multer from 'multer'
 import mongoose from 'mongoose'
 import { v4 as uuid } from 'uuid'
-import { Message, StoredFile } from '../../db/models.js'
+import { Message, StoredFile, VideoCall } from '../../db/models.js'
 import { config } from '../../config.js'
 import { authRequired, requireGroupMember } from '../../middleware/auth.js'
 import { createUploadRateLimiter } from '../../middleware/uploadRateLimit.js'
@@ -151,15 +151,37 @@ function formatMessage(row, groupSlug) {
     }
   }
 
+  if (row.type === 'call' && row.call) {
+    message.call = row.call
+  }
+
   return message
 }
 
 async function enrichMessageRows(messages) {
   const fileIds = messages.filter((m) => m.type === 'attachment' && m.file_id).map((m) => m.file_id)
+  const callIds = messages.filter((m) => m.type === 'call' && m.call_id).map((m) => m.call_id)
   const files = fileIds.length ? await StoredFile.find({ id: { $in: fileIds } }).lean() : []
+  const calls = callIds.length ? await VideoCall.find({ id: { $in: callIds } }).lean() : []
   const fileById = Object.fromEntries(files.map((file) => [file.id, file]))
+  const callById = Object.fromEntries(calls.map((call) => [call.id, call]))
 
   return messages.map((message) => {
+    if (message.type === 'call' && message.call_id) {
+      const call = callById[message.call_id]
+      return {
+        ...message,
+        call: call
+          ? {
+              id: call.id,
+              status: call.status,
+              joinUrl: call.join_url,
+              roomName: call.room_name,
+            }
+          : { id: message.call_id, status: 'ended' },
+      }
+    }
+
     if (message.type !== 'attachment' || !message.file_id) {
       if (message.type === 'voice' && message.voice_storage_key) {
         return {

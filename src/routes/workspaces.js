@@ -4,6 +4,7 @@ import workspaceTasks from './workspace/tasks.js'
 import workspaceMessages from './workspace/messages.js'
 import workspaceFiles from './workspace/files.js'
 import workspaceSessions from './workspace/sessions.js'
+import workspaceCalls from './workspace/calls.js'
 
 const router = Router()
 
@@ -12,5 +13,6 @@ router.use('/:groupId/tasks', workspaceTasks)
 router.use('/:groupId/messages', workspaceMessages)
 router.use('/:groupId/files', workspaceFiles)
 router.use('/:groupId/sessions', workspaceSessions)
+router.use('/:groupId/calls', workspaceCalls)
 
 export default router
