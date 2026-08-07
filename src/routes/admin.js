@@ -122,11 +122,35 @@ router.get('/reports/activity', async (req, res, next) => {
 
 router.get('/cohorts', async (req, res, next) => {
   try {
-    const cohorts = await Cohort.find().sort({ created_at: -1 }).lean()
+    let cohorts = await Cohort.find().sort({ created_at: -1 }).lean()
+
+    // If pods exist but no cohorts, create a default active cohort and attach orphans
+    if (cohorts.length === 0) {
+      const orphanPods = await StudyGroup.countDocuments({
+        $or: [{ cohort_id: null }, { cohort_id: { $exists: false } }, { cohort_id: '' }],
+      })
+      if (orphanPods > 0) {
+        const id = uuid()
+        const now = new Date().toISOString()
+        await Cohort.create({
+          id,
+          name: 'Default Cohort',
+          term: new Date().getFullYear().toString(),
+          created_at: now,
+        })
+        await StudyGroup.updateMany(
+          {
+            $or: [{ cohort_id: null }, { cohort_id: { $exists: false } }, { cohort_id: '' }],
+          },
+          { cohort_id: id },
+        )
+        cohorts = await Cohort.find().sort({ created_at: -1 }).lean()
+      }
+    }
 
     const result = await Promise.all(
       cohorts.map(async (c) => {
-        const groups = await StudyGroup.find({ cohort_id: c.id }, { id: 1 }).lean()
+        const groups = await StudyGroup.find({ cohort_id: c.id }, { id: 1, slug: 1, title: 1 }).lean()
         const groupIds = groups.map((g) => g.id)
         const memberUserIds = groupIds.length
           ? await GroupMember.distinct('user_id', { group_id: { $in: groupIds } })
@@ -136,14 +160,26 @@ router.get('/cohorts', async (req, res, next) => {
           id: c.id,
           name: c.name,
           term: c.term,
+          status: 'active',
           studentCount: memberUserIds.length,
           groupCount: groups.length,
+          podCount: groups.length,
+          pods: groups.map((g) => ({
+            id: g.id,
+            groupId: g.slug,
+            title: g.title,
+          })),
           createdAt: c.created_at,
         }
       }),
     )
 
-    res.json({ cohorts: result })
+    res.json({
+      cohorts: result,
+      // aliases some frontends expect
+      items: result,
+      total: result.length,
+    })
   } catch (error) {
     next(error)
   }
@@ -158,15 +194,27 @@ router.post('/cohorts', async (req, res, next) => {
 
     const id = uuid()
     const now = new Date().toISOString()
+    const cleanName = name.trim()
+    const cleanTerm = term?.trim() || null
 
     await Cohort.create({
       id,
-      name: name.trim(),
-      term: term?.trim() || null,
+      name: cleanName,
+      term: cleanTerm,
       created_at: now,
     })
 
-    res.status(201).json({ id, name: name.trim(), term: term?.trim() || null, createdAt: now })
+    res.status(201).json({
+      id,
+      name: cleanName,
+      term: cleanTerm,
+      status: 'active',
+      studentCount: 0,
+      groupCount: 0,
+      podCount: 0,
+      pods: [],
+      createdAt: now,
+    })
   } catch (error) {
     next(error)
   }
