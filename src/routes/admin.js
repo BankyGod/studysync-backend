@@ -45,7 +45,26 @@ router.get('/dashboard', async (req, res, next) => {
       getEngagementReport(),
       getActivityReport({ days: 7 }),
     ])
-    res.json({ overview, engagement, recentActivity: activity })
+
+    // Flat summary for Instructor overview cards (Students / Pods / Cohorts / Matched)
+    const summary = {
+      students: overview.students,
+      pods: overview.pods,
+      cohorts: overview.cohorts,
+      matched: overview.matched,
+    }
+
+    res.json({
+      summary,
+      // Top-level aliases (frontend may read either shape)
+      students: summary.students,
+      pods: summary.pods,
+      cohorts: summary.cohorts,
+      matched: summary.matched,
+      overview,
+      engagement,
+      recentActivity: activity,
+    })
   } catch (error) {
     next(error)
   }

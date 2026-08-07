@@ -70,9 +70,23 @@ https://studysync-backend-5i2a.onrender.com/api
 
 ```json
 {
+  "summary": {
+    "students": 42,
+    "pods": 8,
+    "cohorts": 2,
+    "matched": 28
+  },
+  "students": 42,
+  "pods": 8,
+  "cohorts": 2,
+  "matched": 28,
   "overview": {
+    "students": 42,
+    "pods": 8,
+    "cohorts": 2,
+    "matched": 28,
     "users": { "students": 42, "instructors": 2, "admins": 1, "total": 45 },
-    "pods": { "total": 8, "memberships": 36 },
+    "podStats": { "total": 8, "memberships": 36 },
     "tasks": { "todo": 12, "inProgress": 5, "completed": 20, "total": 37 },
     "messages": 120,
     "files": 18,
@@ -102,6 +116,15 @@ https://studysync-backend-5i2a.onrender.com/api
   }
 }
 ```
+
+Instructor overview cards should bind:
+
+| Card | Field |
+|------|--------|
+| Students | `summary.students` (or top-level `students`) |
+| Pods | `summary.pods` |
+| Cohorts | `summary.cohorts` |
+| Matched | `summary.matched` |
 
 ## Sample: create staff `POST /admin/users`
 

@@ -8,6 +8,7 @@ import {
   Message,
   StoredFile,
   MatchingJob,
+  Cohort,
 } from '../db/models.js'
 import { computeReliabilityBatch, formatReliability } from './reliabilityService.js'
 
@@ -44,6 +45,8 @@ export async function getOverviewReport() {
     admins,
     pods,
     memberships,
+    cohorts,
+    matchedStudents,
     tasksTodo,
     tasksInProgress,
     tasksCompleted,
@@ -59,6 +62,8 @@ export async function getOverviewReport() {
     User.countDocuments({ role: 'admin' }),
     StudyGroup.countDocuments(),
     GroupMember.countDocuments(),
+    Cohort.countDocuments(),
+    GroupMember.distinct('user_id').then((ids) => ids.length),
     Task.countDocuments({ status: 'todo' }),
     Task.countDocuments({ status: 'in_progress' }),
     Task.countDocuments({ status: 'completed' }),
@@ -71,8 +76,13 @@ export async function getOverviewReport() {
   ])
 
   return {
+    // Flat card fields (Instructor overview: Students / Pods / Cohorts / Matched)
+    students,
+    pods,
+    cohorts,
+    matched: matchedStudents,
     users: { students, instructors, admins, total: students + instructors + admins },
-    pods: { total: pods, memberships },
+    podStats: { total: pods, memberships },
     tasks: {
       todo: tasksTodo,
       inProgress: tasksInProgress,
