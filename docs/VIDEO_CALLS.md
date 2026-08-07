@@ -1,80 +1,158 @@
-# Pod video calls (chat)
+# Pod video calls (in-app)
 
-Group members can start an **online video call** from pod chat. The backend creates a shared **Jitsi** room (no paid API key required with `meet.jit.si`).
+Video calls stay **inside StudySync**. Do **not** redirect users to `meet.jit.si`.
+
+Default provider: **`webrtc`** (camera/mic in your UI via WebRTC + Socket.IO signaling).
+
+Optional: `provider: "jitsi"` embeds Jitsi **inside a panel** with the External API (still no full-page redirect).
+
+---
+
+## Camera error: `gum.general: Could not start video source`
+
+This is a **browser/device** issue, not a missing backend route. Fix checklist:
+
+1. Site must be **HTTPS** (or `localhost`) — camera APIs block plain HTTP.
+2. User must **Allow** camera + microphone when the browser prompts.
+3. Close Zoom/Teams/other apps using the camera.
+4. If using an iframe, it **must** include:
+   ```html
+   allow="camera; microphone; display-capture; autoplay; clipboard-write"
+   ```
+5. Prefer mounting WebRTC `<video>` elements in your React tree (default `webrtc` provider) instead of opening a new tab.
+
+---
 
 ## API
 
-Base: `/api/workspaces/:groupId/calls`  
-Auth: Bearer JWT + must be a group member
+`POST /api/workspaces/:groupId/calls`
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| `POST` | `/` | Start call (fails with 409 if one is already active) |
-| `GET` | `/active` | Current active call or `{ call: null }` |
-| `GET` | `/:callId` | Call details |
-| `POST` | `/:callId/join` | Mark current user as joined |
-| `POST` | `/:callId/leave` | Leave (auto-ends when last person leaves) |
-| `POST` | `/:callId/end` | End call for everyone |
+```json
+{ "title": "Quick sync", "provider": "webrtc" }
+```
 
-### Start response (`201`)
+| `provider` | Behavior |
+|------------|----------|
+| `webrtc` (default) | In-app WebRTC; use `call.embed` + socket signaling |
+| `jitsi` | Embed Jitsi in a div via External API using `call.embed` |
+
+### Response highlight
 
 ```json
 {
   "call": {
     "id": "...",
-    "groupId": "cs-101",
-    "status": "active",
-    "provider": "jitsi",
-    "roomName": "StudySynccs101abc123",
-    "joinUrl": "https://meet.jit.si/StudySynccs101abc123?...",
-    "startedById": "...",
-    "participantIds": ["..."],
-    "participantCount": 1,
-    "startedAt": "..."
-  },
-  "message": {
-    "id": "...",
-    "type": "call",
-    "content": "Started a video call",
-    "call": { "id": "...", "status": "active", "joinUrl": "...", "roomName": "..." }
+    "provider": "webrtc",
+    "joinUrl": null,
+    "embed": {
+      "mode": "webrtc",
+      "callId": "...",
+      "groupId": "cs-101",
+      "iceServers": [{ "urls": "stun:stun.l.google.com:19302" }],
+      "socketRoom": "call:...",
+      "displayName": "Ada Lovelace"
+    },
+    "participantIds": ["..."]
   }
 }
 ```
 
-## Socket.IO (workspace room)
+Other endpoints (unchanged): `GET /active`, `POST /:callId/join|leave|end`.
 
-Join with `join:workspace` `{ groupId }` first.
+---
 
-| Event | When |
-|-------|------|
-| `call:started` | Someone started a call |
-| `call:participant-joined` | Member joined |
-| `call:participant-left` | Member left |
-| `call:ended` | Call ended |
-| `message:new` | Chat bubble for start/end |
+## Frontend: in-app WebRTC (recommended)
 
-## Frontend integration
+1. Start/join call via REST.
+2. Open a **full-screen / side panel** in the workspace (stay on StudySync).
+3. Socket steps:
 
-1. Button in chat: `POST /workspaces/{groupId}/calls`
-2. Open `call.joinUrl` in a new tab **or** embed Jitsi in an iframe / [Jitsi Meet External API](https://jitsi.github.io/handbook/docs/dev-guide/dev-guide-iframe)
-3. Listen for `call:started` so other members see “Join call”
-4. On join: `POST .../calls/{callId}/join` then open the same `joinUrl`
-5. On hang up: `POST .../calls/{callId}/leave` or `.../end`
+```js
+socket.emit('call:join-room', { callId, groupId })
 
-Example iframe:
+socket.on('webrtc:peer-joined', ({ userId }) => {
+  // create RTCPeerConnection, createOffer, then:
+  socket.emit('webrtc:signal', {
+    callId,
+    toUserId: userId,
+    signal: { type: 'offer', sdp },
+  })
+})
+
+socket.on('webrtc:signal', async ({ fromUserId, signal }) => {
+  // handle offer / answer / ice-candidate
+  // reply with webrtc:signal to fromUserId
+})
+
+// on hang up:
+socket.emit('call:leave-room', { callId })
+await api.post(`/workspaces/${groupId}/calls/${callId}/leave`)
+```
+
+4. Local media:
+
+```js
+const stream = await navigator.mediaDevices.getUserMedia({
+  audio: true,
+  video: true,
+})
+localVideoRef.srcObject = stream
+```
+
+5. Attach remote tracks to `<video autoPlay playsInline />` elements in your UI.
+
+Mesh WebRTC works well for small pods (≈2–6). For larger rooms later, move to an SFU (LiveKit/Daily).
+
+---
+
+## Frontend: Jitsi embedded (no redirect)
+
+Only if you pass `provider: "jitsi"`.
+
+```html
+<script src="https://meet.jit.si/external_api.js"></script>
+```
+
+```js
+const { domain, options } = call.embed
+const api = new JitsiMeetExternalAPI(domain, {
+  ...options,
+  parentNode: document.getElementById('studysync-call-panel'),
+})
+```
+
+Never do `window.location = call.joinUrl` or `window.open` unless the user explicitly asks for a pop-out.
+
+Iframe fallback (if you must):
 
 ```html
 <iframe
-  allow="camera; microphone; display-capture; autoplay"
+  id="studysync-call-panel"
+  allow="camera; microphone; display-capture; autoplay; clipboard-write"
+  allowfullscreen
   src="{call.joinUrl}"
-  style="width:100%;height:70vh;border:0"
+  style="width:100%;height:70vh;border:0;border-radius:12px"
 ></iframe>
 ```
+
+---
+
+## Socket events
+
+| Event | Direction | Purpose |
+|-------|-----------|---------|
+| `call:started` / `call:ended` | server → clients | Call lifecycle |
+| `call:join-room` | client → server | Join signaling room `call:{id}` |
+| `call:leave-room` | client → server | Leave signaling room |
+| `webrtc:peer-joined` / `webrtc:peer-left` | server → room | Peer presence |
+| `webrtc:signal` | both | Relay SDP / ICE (`offer`, `answer`, `ice-candidate`) |
+
+---
 
 ## Env
 
 ```
 JITSI_DOMAIN=meet.jit.si
+# optional custom ICE (JSON array) for WebRTC
+# WEBRTC_ICE_SERVERS=[{"urls":"stun:stun.l.google.com:19302"}]
 ```
-
-Optional: point `JITSI_DOMAIN` at your own Jitsi server later.

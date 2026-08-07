@@ -42,6 +42,7 @@ router.post('/', async (req, res, next) => {
       group: req.group,
       user: req.user,
       title: req.body?.title,
+      provider: req.body?.provider,
       io,
     })
     res.status(201).json(result)

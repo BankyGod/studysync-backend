@@ -51,7 +51,7 @@ export function initSocket(httpServer, app) {
 
       const membership = await GroupMember.findOne({ group_id: group.id, user_id: socket.user.id }).lean()
 
-      if (!membership && socket.user.role !== 'instructor') return
+      if (!membership && socket.user.role !== 'instructor' && socket.user.role !== 'admin') return
 
       socket.join(`workspace:${groupId}`)
     })
@@ -60,6 +60,54 @@ export function initSocket(httpServer, app) {
       if (groupId) {
         socket.leave(`workspace:${groupId}`)
       }
+    })
+
+    // In-app WebRTC video calls — stay inside StudySync UI (no redirect)
+    socket.on('call:join-room', async ({ callId, groupId }) => {
+      if (!callId || !groupId) return
+
+      const group = await StudyGroup.findOne({ slug: groupId }).lean()
+      if (!group) return
+
+      const membership = await GroupMember.findOne({
+        group_id: group.id,
+        user_id: socket.user.id,
+      }).lean()
+
+      if (!membership && socket.user.role !== 'instructor' && socket.user.role !== 'admin') return
+
+      socket.join(`call:${callId}`)
+      socket.to(`call:${callId}`).emit('webrtc:peer-joined', {
+        callId,
+        userId: socket.user.id,
+        name: `${socket.user.first_name} ${socket.user.last_name}`.trim(),
+      })
+    })
+
+    socket.on('call:leave-room', ({ callId }) => {
+      if (!callId) return
+      socket.leave(`call:${callId}`)
+      socket.to(`call:${callId}`).emit('webrtc:peer-left', {
+        callId,
+        userId: socket.user.id,
+      })
+    })
+
+    socket.on('webrtc:signal', ({ callId, toUserId, signal }) => {
+      if (!callId || !signal) return
+
+      const payload = {
+        callId,
+        fromUserId: socket.user.id,
+        signal,
+      }
+
+      if (toUserId) {
+        io.to(`user:${toUserId}`).emit('webrtc:signal', payload)
+        return
+      }
+
+      socket.to(`call:${callId}`).emit('webrtc:signal', payload)
     })
   })
 

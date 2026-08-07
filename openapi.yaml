@@ -988,7 +988,7 @@ paths:
   /workspaces/{groupId}/calls:
     post:
       tags: [Workspaces]
-      summary: Start a pod video call (Jitsi room) and post a chat message
+      summary: Start a pod video call (default webrtc = in-app; optional jitsi embed)
       security:
         - bearerAuth: []
       parameters:
@@ -1005,6 +1005,11 @@ paths:
               properties:
                 title:
                   type: string
+                provider:
+                  type: string
+                  enum: [webrtc, jitsi]
+                  default: webrtc
+                  description: webrtc = in-app WebRTC. jitsi = embed in panel (do not redirect).
       responses:
         '201':
           description: Call started

@@ -175,7 +175,8 @@ async function enrichMessageRows(messages) {
           ? {
               id: call.id,
               status: call.status,
-              joinUrl: call.join_url,
+              provider: call.provider,
+              joinUrl: call.provider === 'jitsi' ? call.join_url : null,
               roomName: call.room_name,
             }
           : { id: message.call_id, status: 'ended' },

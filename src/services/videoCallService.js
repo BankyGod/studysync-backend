@@ -3,32 +3,106 @@ import { config } from '../config.js'
 import { VideoCall, Message } from '../db/models.js'
 import { conflict, notFound, validationError } from '../utils/errors.js'
 
+const DEFAULT_ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+]
+
 function sanitizeRoomToken(value) {
   return String(value || '')
     .replace(/[^a-zA-Z0-9]/g, '')
     .slice(0, 48)
 }
 
+function parseIceServers() {
+  const raw = process.env.WEBRTC_ICE_SERVERS?.trim()
+  if (!raw) return DEFAULT_ICE_SERVERS
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) && parsed.length ? parsed : DEFAULT_ICE_SERVERS
+  } catch {
+    return DEFAULT_ICE_SERVERS
+  }
+}
+
 export function buildJitsiJoinUrl(roomName, { displayName, userEmail } = {}) {
   const params = new URLSearchParams()
   if (displayName) params.set('userInfo.displayName', displayName)
   if (userEmail) params.set('userInfo.email', userEmail)
-  // Skip prejoin for smoother in-app embeds
   params.set('config.prejoinConfig.enabled', 'false')
   params.set('config.disableDeepLinking', 'true')
+  params.set('config.startWithAudioMuted', 'false')
+  params.set('config.startWithVideoMuted', 'false')
+  // Prefer in-browser experience (helps avoid mobile deep-link redirects)
+  params.set('config.disableInviteFunctions', 'true')
 
   const query = params.toString()
   return `https://${config.jitsiDomain}/${roomName}${query ? `?${query}` : ''}`
 }
 
+export function buildEmbedConfig(call, { displayName, userEmail } = {}) {
+  if (call.provider === 'webrtc') {
+    return {
+      mode: 'webrtc',
+      callId: call.id,
+      groupId: call.group_slug,
+      iceServers: parseIceServers(),
+      socketRoom: `call:${call.id}`,
+      displayName: displayName || undefined,
+    }
+  }
+
+  return {
+    mode: 'jitsi',
+    domain: config.jitsiDomain,
+    roomName: call.room_name,
+    callId: call.id,
+    groupId: call.group_slug,
+    displayName: displayName || undefined,
+    email: userEmail || undefined,
+    // Use with Jitsi Meet External API — mount inside your app, do NOT redirect
+    options: {
+      roomName: call.room_name,
+      width: '100%',
+      height: '100%',
+      parentNode: null,
+      userInfo: {
+        displayName: displayName || 'StudySync User',
+        email: userEmail || undefined,
+      },
+      configOverwrite: {
+        prejoinPageEnabled: false,
+        prejoinConfig: { enabled: false },
+        disableDeepLinking: true,
+        startWithAudioMuted: false,
+        startWithVideoMuted: false,
+        enableWelcomePage: false,
+        disableInviteFunctions: true,
+      },
+      interfaceConfigOverwrite: {
+        DISABLE_JOIN_LEAVE_NOTIFICATIONS: true,
+        SHOW_JITSI_WATERMARK: false,
+        MOBILE_APP_PROMO: false,
+      },
+    },
+  }
+}
+
 export function formatVideoCall(call, { displayName, userEmail } = {}) {
+  const joinUrl =
+    call.provider === 'webrtc'
+      ? null
+      : buildJitsiJoinUrl(call.room_name, { displayName, userEmail })
+
   return {
     id: call.id,
     groupId: call.group_slug,
     status: call.status,
     provider: call.provider,
     roomName: call.room_name,
-    joinUrl: buildJitsiJoinUrl(call.room_name, { displayName, userEmail }),
+    // Prefer embed — do not navigate the browser away from StudySync
+    joinUrl,
+    embed: buildEmbedConfig(call, { displayName, userEmail }),
     startedById: call.started_by_id,
     participantIds: call.participant_ids ?? [],
     participantCount: (call.participant_ids ?? []).length,
@@ -38,11 +112,22 @@ export function formatVideoCall(call, { displayName, userEmail } = {}) {
   }
 }
 
+function callMessagePayload(call, formatted) {
+  return {
+    id: call.id,
+    status: call.status,
+    provider: call.provider,
+    joinUrl: formatted.joinUrl,
+    roomName: formatted.roomName,
+    embed: formatted.embed,
+  }
+}
+
 export async function getActiveCallForGroup(groupId) {
   return VideoCall.findOne({ group_id: groupId, status: 'active' }).lean()
 }
 
-export async function startVideoCall({ group, user, title, io }) {
+export async function startVideoCall({ group, user, title, provider, io }) {
   const existing = await getActiveCallForGroup(group.id)
   if (existing) {
     throw conflict('A video call is already active for this pod', {
@@ -53,13 +138,21 @@ export async function startVideoCall({ group, user, title, io }) {
     })
   }
 
+  const selectedProvider = ['webrtc', 'jitsi'].includes(provider) ? provider : 'webrtc'
   const callId = uuid()
   const now = new Date().toISOString()
-  const roomName = `StudySync${sanitizeRoomToken(group.slug)}${sanitizeRoomToken(callId).slice(0, 12)}`
-  const joinUrl = buildJitsiJoinUrl(roomName, {
-    displayName: `${user.first_name} ${user.last_name}`.trim(),
-    userEmail: user.email,
-  })
+  const roomName =
+    selectedProvider === 'webrtc'
+      ? `webrtc-${sanitizeRoomToken(group.slug)}-${sanitizeRoomToken(callId).slice(0, 12)}`
+      : `StudySync${sanitizeRoomToken(group.slug)}${sanitizeRoomToken(callId).slice(0, 12)}`
+
+  const joinUrl =
+    selectedProvider === 'jitsi'
+      ? buildJitsiJoinUrl(roomName, {
+          displayName: `${user.first_name} ${user.last_name}`.trim(),
+          userEmail: user.email,
+        })
+      : `studysync://call/${group.slug}/${callId}`
 
   await VideoCall.create({
     id: callId,
@@ -67,7 +160,7 @@ export async function startVideoCall({ group, user, title, io }) {
     group_slug: group.slug,
     room_name: roomName,
     join_url: joinUrl,
-    provider: 'jitsi',
+    provider: selectedProvider,
     status: 'active',
     started_by_id: user.id,
     participant_ids: [user.id],
@@ -101,12 +194,7 @@ export async function startVideoCall({ group, user, title, io }) {
     type: 'call',
     content,
     sentAt: now,
-    call: {
-      id: callId,
-      status: 'active',
-      joinUrl: formatted.joinUrl,
-      roomName: formatted.roomName,
-    },
+    call: callMessagePayload(call, formatted),
   }
 
   if (io) {
@@ -136,10 +224,7 @@ export async function joinVideoCall({ group, callId, user, io }) {
   const participantIds = new Set(call.participant_ids ?? [])
   participantIds.add(user.id)
 
-  await VideoCall.updateOne(
-    { id: callId },
-    { participant_ids: [...participantIds] },
-  )
+  await VideoCall.updateOne({ id: callId }, { participant_ids: [...participantIds] })
 
   const updated = await VideoCall.findOne({ id: callId }).lean()
   const formatted = formatVideoCall(updated, {
@@ -149,6 +234,13 @@ export async function joinVideoCall({ group, callId, user, io }) {
 
   if (io) {
     io.to(`workspace:${group.slug}`).emit('call:participant-joined', {
+      groupId: group.slug,
+      callId,
+      userId: user.id,
+      name: `${user.first_name} ${user.last_name}`.trim(),
+      call: formatted,
+    })
+    io.to(`call:${callId}`).emit('call:participant-joined', {
       groupId: group.slug,
       callId,
       userId: user.id,
@@ -177,15 +269,16 @@ export async function leaveVideoCall({ group, callId, user, io }) {
   const formatted = formatVideoCall(updated)
 
   if (io) {
-    io.to(`workspace:${group.slug}`).emit('call:participant-left', {
+    const payload = {
       groupId: group.slug,
       callId,
       userId: user.id,
       call: formatted,
-    })
+    }
+    io.to(`workspace:${group.slug}`).emit('call:participant-left', payload)
+    io.to(`call:${callId}`).emit('call:participant-left', payload)
   }
 
-  // Auto-end when everyone leaves
   if (participantIds.length === 0) {
     return endVideoCall({ group, callId, user, io, reason: 'empty' })
   }
@@ -234,16 +327,16 @@ export async function endVideoCall({ group, callId, user, io, reason = 'ended' }
     type: 'call',
     content,
     sentAt: now,
-    call: {
-      id: callId,
-      status: 'ended',
-      joinUrl: formatted.joinUrl,
-      roomName: formatted.roomName,
-    },
+    call: callMessagePayload(updated, formatted),
   }
 
   if (io) {
     io.to(`workspace:${group.slug}`).emit('call:ended', {
+      groupId: group.slug,
+      call: formatted,
+      message,
+    })
+    io.to(`call:${callId}`).emit('call:ended', {
       groupId: group.slug,
       call: formatted,
       message,
