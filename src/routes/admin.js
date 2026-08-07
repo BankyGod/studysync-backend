@@ -16,7 +16,7 @@ import {
 import { authRequired, requireRole } from '../middleware/auth.js'
 import { conflict, forbidden, notFound, validationError } from '../utils/errors.js'
 import { courseToSlug } from '../utils/helpers.js'
-import { computeUserReliability, formatReliability } from '../services/reliabilityService.js'
+import { computeReliabilityBatch, computeUserReliability, formatReliability } from '../services/reliabilityService.js'
 import {
   getOverviewReport,
   getEngagementReport,
@@ -353,18 +353,57 @@ router.get('/groups', async (req, res, next) => {
       { $sort: { created_at: -1 } },
     ])
 
-    res.json({
-      groups: groups.map((g) => ({
-        id: g.id,
-        groupId: g.slug,
-        title: g.title,
-        subject: g.subject,
-        courseNumber: g.course_number,
-        memberCount: g.member_count,
-        cohortId: g.cohort_id,
-        createdAt: g.created_at,
-      })),
-    })
+    const allMemberIds = [...new Set(groups.flatMap((g) => g.members.map((m) => m.user_id)))]
+    const users = allMemberIds.length
+      ? await User.find({ id: { $in: allMemberIds } })
+          .select('id first_name last_name email program level')
+          .lean()
+      : []
+    const userById = Object.fromEntries(users.map((u) => [u.id, u]))
+
+    const result = await Promise.all(
+      groups.map(async (g) => {
+        const memberIds = g.members.map((m) => m.user_id)
+        const reliabilityByUser = await computeReliabilityBatch(memberIds, g.id, g.slug)
+
+        const members = g.members.map((m) => {
+          const u = userById[m.user_id]
+          const reliability = formatReliability(
+            reliabilityByUser[m.user_id] || { score: null, tasksScored: 0, scope: 'group', groupId: g.slug },
+          )
+          const atRisk = reliability.score !== null && reliability.score < 60
+
+          return {
+            id: m.user_id,
+            name: u ? `${u.first_name} ${u.last_name}`.trim() : 'Unknown',
+            email: u?.email,
+            program: u?.program,
+            level: u?.level,
+            initials: m.initials,
+            joinedAt: m.joined_at,
+            reliability,
+            atRisk,
+          }
+        })
+
+        const atRiskCount = members.filter((m) => m.atRisk).length
+
+        return {
+          id: g.id,
+          groupId: g.slug,
+          title: g.title,
+          subject: g.subject,
+          courseNumber: g.course_number,
+          memberCount: g.member_count,
+          atRiskCount,
+          members,
+          cohortId: g.cohort_id,
+          createdAt: g.created_at,
+        }
+      }),
+    )
+
+    res.json({ groups: result })
   } catch (error) {
     next(error)
   }
@@ -385,6 +424,11 @@ router.get('/groups/:groupId', async (req, res, next) => {
       ? await User.find({ id: { $in: members.map((m) => m.user_id) } }).lean()
       : []
     const userById = Object.fromEntries(users.map((u) => [u.id, u]))
+    const reliabilityByUser = await computeReliabilityBatch(
+      members.map((m) => m.user_id),
+      group.id,
+      group.slug,
+    )
 
     const [taskStats, messageCount, fileCount] = await Promise.all([
       Task.aggregate([
@@ -408,6 +452,29 @@ router.get('/groups/:groupId', async (req, res, next) => {
       tasks.total += row.count
     })
 
+    const formattedMembers = members.map((m) => {
+      const u = userById[m.user_id]
+      const reliability = formatReliability(
+        reliabilityByUser[m.user_id] || {
+          score: null,
+          tasksScored: 0,
+          scope: 'group',
+          groupId: group.slug,
+        },
+      )
+      return {
+        id: m.user_id,
+        name: u ? `${u.first_name} ${u.last_name}`.trim() : 'Unknown',
+        email: u?.email,
+        program: u?.program,
+        level: u?.level,
+        joinedAt: m.joined_at,
+        initials: m.initials,
+        reliability,
+        atRisk: reliability.score !== null && reliability.score < 60,
+      }
+    })
+
     res.json({
       id: group.id,
       groupId: group.slug,
@@ -416,18 +483,8 @@ router.get('/groups/:groupId', async (req, res, next) => {
       courseNumber: group.course_number,
       cohortId: group.cohort_id,
       createdAt: group.created_at,
-      members: members.map((m) => {
-        const u = userById[m.user_id]
-        return {
-          id: m.user_id,
-          name: u ? `${u.first_name} ${u.last_name}`.trim() : 'Unknown',
-          email: u?.email,
-          program: u?.program,
-          level: u?.level,
-          joinedAt: m.joined_at,
-          initials: m.initials,
-        }
-      }),
+      atRiskCount: formattedMembers.filter((m) => m.atRisk).length,
+      members: formattedMembers,
       stats: {
         memberCount: members.length,
         tasks,

@@ -3,9 +3,11 @@ import { config } from './config.js'
 import { initDb } from './db/index.js'
 import { createApp } from './app.js'
 import { initSocket } from './socket.js'
+import { ensureDefaultAdmin } from './services/ensureDefaultAdmin.js'
 
 try {
   await initDb()
+  await ensureDefaultAdmin()
 } catch (error) {
   console.error('Failed to connect to MongoDB')
   console.error(error.message)

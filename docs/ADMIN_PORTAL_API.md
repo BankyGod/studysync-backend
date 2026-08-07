@@ -4,16 +4,28 @@ Backend contract for the **admin subdomain** SPA (e.g. `https://admin.your-app.o
 
 ## Auth
 
-1. `POST /api/auth/login` with an account that has `role: "admin"` or `role: "instructor"`.
-2. Store the JWT and send `Authorization: Bearer <token>` on every admin request.
-3. Gate the portal UI with `user.role === 'admin' || user.role === 'instructor'`.
-4. `POST /api/admin/users` (create staff) requires **`admin` only**.
+1. Prefer **`POST /api/auth/admin/login`** for the admin subdomain (rejects students).
+2. Or use `POST /api/auth/login` — then check `user.role` is `admin` or `instructor`.
+3. Store the JWT and send `Authorization: Bearer <token>` on every admin request.
+4. Gate the portal UI with `user.role === 'admin' || user.role === 'instructor'`.
+5. `POST /api/admin/users` (create staff) requires **`admin` only**.
+6. Session check: `GET /api/auth/admin/me`
 
 Students cannot access `/api/admin/*` (403).
 
 Public registration (`POST /api/auth/register`) only allows `student` / `instructor` — never `admin`.
 
 ### Bootstrap first admin
+
+**Option A — env (auto on server start):**
+
+```
+ADMIN_EMAIL=admin@studysync.com
+ADMIN_PASSWORD=SecurePass1
+ADMIN_NAME=System Admin
+```
+
+**Option B — script:**
 
 ```bash
 node scripts/create-admin.js --email admin@studysync.com --password "SecurePass1" --name "System Admin"

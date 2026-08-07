@@ -121,8 +121,42 @@ router.post('/login', async (req, res, next) => {
   }
 })
 
+router.post('/admin/login', async (req, res, next) => {
+  try {
+    const { email, password } = req.body ?? {}
+    if (!email || !password) {
+      throw validationError('Email and password are required')
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase().trim() }).lean()
+    if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+      throw unauthorized('Invalid email or password')
+    }
+
+    if (!['admin', 'instructor'].includes(user.role)) {
+      throw unauthorized('Admin portal access requires an admin or instructor account')
+    }
+
+    const token = signToken(user.id)
+    res.json({ token, user: await formatUserWithAvatar(user) })
+  } catch (error) {
+    next(error)
+  }
+})
+
 router.get('/me', authRequired, async (req, res) => {
   res.json(await formatUserWithAvatar(req.user))
+})
+
+router.get('/admin/me', authRequired, async (req, res, next) => {
+  try {
+    if (!['admin', 'instructor'].includes(req.user.role)) {
+      throw unauthorized('Admin portal access requires an admin or instructor account')
+    }
+    res.json(await formatUserWithAvatar(req.user))
+  } catch (error) {
+    next(error)
+  }
 })
 
 export default router
