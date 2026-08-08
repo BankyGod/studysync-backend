@@ -1,158 +1,139 @@
-# Pod video calls (in-app)
+# Pod video calls + Jitsi React SDK
 
-Video calls stay **inside StudySync**. Do **not** redirect users to `meet.jit.si`.
+Frontend should embed with [@jitsi/react-sdk](https://jitsi.github.io/handbook/docs/dev-guide/dev-guide-react-sdk) — **do not redirect**.
 
-Default provider: **`webrtc`** (camera/mic in your UI via WebRTC + Socket.IO signaling).
+## Why you see “Waiting for the moderator”
 
-Optional: `provider: "jitsi"` embeds Jitsi **inside a panel** with the External API (still no full-page redirect).
+Public `meet.jit.si` often blocks anonymous room starts. The starter needs a **moderator JWT**.
 
----
-
-## Camera error: `gum.general: Could not start video source`
-
-This is a **browser/device** issue, not a missing backend route. Fix checklist:
-
-1. Site must be **HTTPS** (or `localhost`) — camera APIs block plain HTTP.
-2. User must **Allow** camera + microphone when the browser prompts.
-3. Close Zoom/Teams/other apps using the camera.
-4. If using an iframe, it **must** include:
-   ```html
-   allow="camera; microphone; display-capture; autoplay; clipboard-write"
-   ```
-5. Prefer mounting WebRTC `<video>` elements in your React tree (default `webrtc` provider) instead of opening a new tab.
+StudySync mints that JWT when you configure **8x8 JaaS** or a **self-hosted Jitsi** secret.
 
 ---
 
-## API
+## Backend response (Jitsi)
 
-`POST /api/workspaces/:groupId/calls`
-
-```json
-{ "title": "Quick sync", "provider": "webrtc" }
-```
-
-| `provider` | Behavior |
-|------------|----------|
-| `webrtc` (default) | In-app WebRTC; use `call.embed` + socket signaling |
-| `jitsi` | Embed Jitsi in a div via External API using `call.embed` |
-
-### Response highlight
+`POST /api/workspaces/:groupId/calls` with `{ "provider": "jitsi" }`:
 
 ```json
 {
   "call": {
     "id": "...",
-    "provider": "webrtc",
-    "joinUrl": null,
+    "provider": "jitsi",
+    "roomName": "StudySynccs101abc",
+    "domain": "8x8.vc",
+    "appId": "vpaas-magic-cookie-...",
+    "jwt": "eyJ...",
+    "roomUrl": "https://8x8.vc/StudySynccs101abc?jwt=eyJ...",
+    "joinUrl": "https://8x8.vc/StudySynccs101abc?jwt=eyJ...",
+    "moderator": true,
+    "jwtConfigured": true,
     "embed": {
-      "mode": "webrtc",
-      "callId": "...",
-      "groupId": "cs-101",
-      "iceServers": [{ "urls": "stun:stun.l.google.com:19302" }],
-      "socketRoom": "call:...",
-      "displayName": "Ada Lovelace"
-    },
-    "participantIds": ["..."]
+      "mode": "jaas",
+      "jwt": "eyJ...",
+      "roomUrl": "...",
+      "reactSdk": {
+        "component": "JaaSMeeting",
+        "appId": "vpaas-magic-cookie-...",
+        "roomName": "StudySynccs101abc",
+        "jwt": "eyJ...",
+        "userInfo": { "displayName": "Ada", "email": "ada@..." },
+        "configOverwrite": { "prejoinPageEnabled": false, "disableDeepLinking": true }
+      }
+    }
   }
 }
 ```
 
-Other endpoints (unchanged): `GET /active`, `POST /:callId/join|leave|end`.
+- **Starter** → `moderator: true` + moderator JWT  
+- **Joiner** (`POST .../join`) → participant JWT (`moderator: false` unless they are the starter)
+
+If `jwtConfigured: false`, you are still on anonymous `meet.jit.si` and the lobby/moderator wait will persist.
 
 ---
 
-## Frontend: in-app WebRTC (recommended)
+## Env (Render / `.env`)
 
-1. Start/join call via REST.
-2. Open a **full-screen / side panel** in the workspace (stay on StudySync).
-3. Socket steps:
+### Option A — 8x8 JaaS (recommended for React SDK `JaaSMeeting`)
 
-```js
-socket.emit('call:join-room', { callId, groupId })
-
-socket.on('webrtc:peer-joined', ({ userId }) => {
-  // create RTCPeerConnection, createOffer, then:
-  socket.emit('webrtc:signal', {
-    callId,
-    toUserId: userId,
-    signal: { type: 'offer', sdp },
-  })
-})
-
-socket.on('webrtc:signal', async ({ fromUserId, signal }) => {
-  // handle offer / answer / ice-candidate
-  // reply with webrtc:signal to fromUserId
-})
-
-// on hang up:
-socket.emit('call:leave-room', { callId })
-await api.post(`/workspaces/${groupId}/calls/${callId}/leave`)
+```
+JITSI_DOMAIN=8x8.vc
+JAAS_APP_ID=vpaas-magic-cookie-xxxxxxxx
+JAAS_API_KEY_ID=your-api-key-id
+JAAS_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
 ```
 
-4. Local media:
+Or `JAAS_PRIVATE_KEY_PATH=/path/to/key.pem`
 
-```js
-const stream = await navigator.mediaDevices.getUserMedia({
-  audio: true,
-  video: true,
-})
-localVideoRef.srcObject = stream
+### Option B — Self-hosted Jitsi (HS256)
+
+```
+JITSI_DOMAIN=jitsi.yourschool.edu
+JITSI_APP_ID=studysync
+JITSI_JWT_SECRET=long-random-secret
 ```
 
-5. Attach remote tracks to `<video autoPlay playsInline />` elements in your UI.
+(Your Prosody must enable JWT auth with the same app id/secret.)
 
-Mesh WebRTC works well for small pods (≈2–6). For larger rooms later, move to an SFU (LiveKit/Daily).
-
----
-
-## Frontend: Jitsi embedded (no redirect)
-
-Only if you pass `provider: "jitsi"`.
-
-```html
-<script src="https://meet.jit.si/external_api.js"></script>
-```
-
-```js
-const { domain, options } = call.embed
-const api = new JitsiMeetExternalAPI(domain, {
-  ...options,
-  parentNode: document.getElementById('studysync-call-panel'),
-})
-```
-
-Never do `window.location = call.joinUrl` or `window.open` unless the user explicitly asks for a pop-out.
-
-Iframe fallback (if you must):
-
-```html
-<iframe
-  id="studysync-call-panel"
-  allow="camera; microphone; display-capture; autoplay; clipboard-write"
-  allowfullscreen
-  src="{call.joinUrl}"
-  style="width:100%;height:70vh;border:0;border-radius:12px"
-></iframe>
-```
-
----
-
-## Socket events
-
-| Event | Direction | Purpose |
-|-------|-----------|---------|
-| `call:started` / `call:ended` | server → clients | Call lifecycle |
-| `call:join-room` | client → server | Join signaling room `call:{id}` |
-| `call:leave-room` | client → server | Leave signaling room |
-| `webrtc:peer-joined` / `webrtc:peer-left` | server → room | Peer presence |
-| `webrtc:signal` | both | Relay SDP / ICE (`offer`, `answer`, `ice-candidate`) |
-
----
-
-## Env
+### Not enough alone
 
 ```
 JITSI_DOMAIN=meet.jit.si
-# optional custom ICE (JSON array) for WebRTC
-# WEBRTC_ICE_SERVERS=[{"urls":"stun:stun.l.google.com:19302"}]
 ```
+
+…without JAAS/JWT keys → no moderator token → “waiting for moderator”.
+
+---
+
+## Frontend (`@jitsi/react-sdk`)
+
+```bash
+npm install @jitsi/react-sdk
+```
+
+```jsx
+import { JitsiMeeting, JaaSMeeting } from '@jitsi/react-sdk'
+
+const sdk = call.embed.reactSdk
+
+{sdk.component === 'JaaSMeeting' ? (
+  <JaaSMeeting
+    appId={sdk.appId}
+    roomName={sdk.roomName}
+    jwt={sdk.jwt}
+    userInfo={sdk.userInfo}
+    configOverwrite={sdk.configOverwrite}
+    interfaceConfigOverwrite={sdk.interfaceConfigOverwrite}
+    getIFrameRef={(iframe) => {
+      iframe.style.height = '70vh'
+      iframe.style.width = '100%'
+    }}
+  />
+) : (
+  <JitsiMeeting
+    domain={sdk.domain}
+    roomName={sdk.roomName}
+    jwt={sdk.jwt}
+    userInfo={sdk.userInfo}
+    configOverwrite={sdk.configOverwrite}
+    interfaceConfigOverwrite={sdk.interfaceConfigOverwrite}
+    getIFrameRef={(iframe) => {
+      iframe.style.height = '70vh'
+      iframe.style.width = '100%'
+    }}
+  />
+)}
+```
+
+Pass `jwt={call.jwt}` always when present.
+
+---
+
+## Camera error `gum.general`
+
+Still requires HTTPS (or localhost), camera permission, and nothing else using the webcam. Separate from moderator JWT.
+
+---
+
+## WebRTC fallback
+
+`{ "provider": "webrtc" }` uses in-app Socket.IO signaling (`call:join-room`, `webrtc:signal`) — no Jitsi JWT. See signaling section in older notes / `socket.js`.

@@ -2,6 +2,11 @@ import { v4 as uuid } from 'uuid'
 import { config } from '../config.js'
 import { VideoCall, Message } from '../db/models.js'
 import { conflict, notFound, validationError } from '../utils/errors.js'
+import {
+  buildAuthenticatedRoomUrl,
+  getJitsiAuthMode,
+  mintJitsiJwt,
+} from './jitsiJwt.js'
 
 const DEFAULT_ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
@@ -25,22 +30,41 @@ function parseIceServers() {
   }
 }
 
-export function buildJitsiJoinUrl(roomName, { displayName, userEmail } = {}) {
-  const params = new URLSearchParams()
-  if (displayName) params.set('userInfo.displayName', displayName)
-  if (userEmail) params.set('userInfo.email', userEmail)
-  params.set('config.prejoinConfig.enabled', 'false')
-  params.set('config.disableDeepLinking', 'true')
-  params.set('config.startWithAudioMuted', 'false')
-  params.set('config.startWithVideoMuted', 'false')
-  // Prefer in-browser experience (helps avoid mobile deep-link redirects)
-  params.set('config.disableInviteFunctions', 'true')
+function buildJitsiCredentials(call, user, { moderator = false } = {}) {
+  const auth = getJitsiAuthMode()
+  const displayName = `${user.first_name} ${user.last_name}`.trim()
+  const userEmail = user.email
+  const domain = auth.mode === 'jaas' ? auth.domain || '8x8.vc' : config.jitsiDomain
 
-  const query = params.toString()
-  return `https://${config.jitsiDomain}/${roomName}${query ? `?${query}` : ''}`
+  const jwtToken = mintJitsiJwt({
+    roomName: call.room_name,
+    userId: user.id,
+    displayName,
+    userEmail,
+    moderator,
+  })
+
+  const appId = auth.mode === 'jaas' ? auth.appId : undefined
+  const roomUrl = buildAuthenticatedRoomUrl(domain, call.room_name, jwtToken, {
+    displayName,
+    userEmail,
+    appId,
+  })
+
+  return {
+    domain,
+    jwt: jwtToken,
+    roomUrl,
+    joinUrl: roomUrl,
+    authMode: auth.mode,
+    appId,
+    displayName,
+    userEmail,
+    moderator,
+  }
 }
 
-export function buildEmbedConfig(call, { displayName, userEmail } = {}) {
+export function buildEmbedConfig(call, user, { moderator = false } = {}) {
   if (call.provider === 'webrtc') {
     return {
       mode: 'webrtc',
@@ -48,51 +72,95 @@ export function buildEmbedConfig(call, { displayName, userEmail } = {}) {
       groupId: call.group_slug,
       iceServers: parseIceServers(),
       socketRoom: `call:${call.id}`,
-      displayName: displayName || undefined,
+      displayName: `${user.first_name} ${user.last_name}`.trim(),
     }
   }
 
-  return {
-    mode: 'jitsi',
-    domain: config.jitsiDomain,
+  const creds = buildJitsiCredentials(call, user, { moderator })
+  const auth = getJitsiAuthMode()
+
+  // Shape for @jitsi/react-sdk — https://jitsi.github.io/handbook/docs/dev-guide/dev-guide-react-sdk
+  const reactSdk = {
+    component: auth.mode === 'jaas' ? 'JaaSMeeting' : 'JitsiMeeting',
+    domain: creds.domain,
+    appId: creds.appId,
     roomName: call.room_name,
+    jwt: creds.jwt || undefined,
+    userInfo: {
+      displayName: creds.displayName,
+      email: creds.userEmail,
+    },
+    configOverwrite: {
+      prejoinPageEnabled: false,
+      prejoinConfig: { enabled: false },
+      disableDeepLinking: true,
+      startWithAudioMuted: false,
+      startWithVideoMuted: false,
+      enableWelcomePage: false,
+      disableInviteFunctions: true,
+      requireDisplayName: false,
+    },
+    interfaceConfigOverwrite: {
+      DISABLE_JOIN_LEAVE_NOTIFICATIONS: true,
+      SHOW_JITSI_WATERMARK: false,
+      MOBILE_APP_PROMO: false,
+    },
+  }
+
+  return {
+    mode: auth.mode === 'jaas' ? 'jaas' : 'jitsi',
+    domain: creds.domain,
+    appId: creds.appId,
+    roomName: call.room_name,
+    jwt: creds.jwt,
+    roomUrl: creds.roomUrl,
     callId: call.id,
     groupId: call.group_slug,
-    displayName: displayName || undefined,
-    email: userEmail || undefined,
-    // Use with Jitsi Meet External API — mount inside your app, do NOT redirect
+    displayName: creds.displayName,
+    email: creds.userEmail,
+    moderator: creds.moderator,
+    authMode: creds.authMode,
+    requiresJwt: auth.mode !== 'anonymous',
+    jwtConfigured: Boolean(creds.jwt),
+    reactSdk,
     options: {
       roomName: call.room_name,
+      jwt: creds.jwt || undefined,
       width: '100%',
       height: '100%',
       parentNode: null,
-      userInfo: {
-        displayName: displayName || 'StudySync User',
-        email: userEmail || undefined,
-      },
-      configOverwrite: {
-        prejoinPageEnabled: false,
-        prejoinConfig: { enabled: false },
-        disableDeepLinking: true,
-        startWithAudioMuted: false,
-        startWithVideoMuted: false,
-        enableWelcomePage: false,
-        disableInviteFunctions: true,
-      },
-      interfaceConfigOverwrite: {
-        DISABLE_JOIN_LEAVE_NOTIFICATIONS: true,
-        SHOW_JITSI_WATERMARK: false,
-        MOBILE_APP_PROMO: false,
-      },
+      userInfo: reactSdk.userInfo,
+      configOverwrite: reactSdk.configOverwrite,
+      interfaceConfigOverwrite: reactSdk.interfaceConfigOverwrite,
     },
   }
 }
 
-export function formatVideoCall(call, { displayName, userEmail } = {}) {
-  const joinUrl =
-    call.provider === 'webrtc'
-      ? null
-      : buildJitsiJoinUrl(call.room_name, { displayName, userEmail })
+export function formatVideoCall(call, user, { moderator = false } = {}) {
+  if (call.provider === 'webrtc') {
+    return {
+      id: call.id,
+      groupId: call.group_slug,
+      status: call.status,
+      provider: call.provider,
+      roomName: call.room_name,
+      joinUrl: null,
+      roomUrl: null,
+      jwt: null,
+      embed: buildEmbedConfig(call, user, { moderator }),
+      startedById: call.started_by_id,
+      participantIds: call.participant_ids ?? [],
+      participantCount: (call.participant_ids ?? []).length,
+      startedAt: call.started_at,
+      endedAt: call.ended_at ?? undefined,
+      endedById: call.ended_by_id ?? undefined,
+    }
+  }
+
+  const isStarter = user.id === call.started_by_id
+  const grantModerator = moderator || isStarter
+  const embed = buildEmbedConfig(call, user, { moderator: grantModerator })
+  const creds = buildJitsiCredentials(call, user, { moderator: grantModerator })
 
   return {
     id: call.id,
@@ -100,9 +168,16 @@ export function formatVideoCall(call, { displayName, userEmail } = {}) {
     status: call.status,
     provider: call.provider,
     roomName: call.room_name,
-    // Prefer embed — do not navigate the browser away from StudySync
-    joinUrl,
-    embed: buildEmbedConfig(call, { displayName, userEmail }),
+    // React SDK / iframe: prefer these
+    jwt: creds.jwt,
+    roomUrl: creds.roomUrl,
+    joinUrl: creds.roomUrl,
+    domain: creds.domain,
+    appId: creds.appId,
+    moderator: grantModerator,
+    authMode: creds.authMode,
+    jwtConfigured: Boolean(creds.jwt),
+    embed,
     startedById: call.started_by_id,
     participantIds: call.participant_ids ?? [],
     participantCount: (call.participant_ids ?? []).length,
@@ -118,7 +193,9 @@ function callMessagePayload(call, formatted) {
     status: call.status,
     provider: call.provider,
     joinUrl: formatted.joinUrl,
+    roomUrl: formatted.roomUrl,
     roomName: formatted.roomName,
+    jwt: formatted.jwt,
     embed: formatted.embed,
   }
 }
@@ -131,14 +208,23 @@ export async function startVideoCall({ group, user, title, provider, io }) {
   const existing = await getActiveCallForGroup(group.id)
   if (existing) {
     throw conflict('A video call is already active for this pod', {
-      call: formatVideoCall(existing, {
-        displayName: `${user.first_name} ${user.last_name}`.trim(),
-        userEmail: user.email,
-      }),
+      call: formatVideoCall(existing, user, { moderator: existing.started_by_id === user.id }),
     })
   }
 
-  const selectedProvider = ['webrtc', 'jitsi'].includes(provider) ? provider : 'webrtc'
+  // Prefer jitsi when JWT is configured (React SDK path); otherwise webrtc
+  const auth = getJitsiAuthMode()
+  const requested = ['webrtc', 'jitsi'].includes(provider) ? provider : null
+  const selectedProvider =
+    requested || (auth.mode === 'anonymous' ? 'webrtc' : 'jitsi')
+
+  if (selectedProvider === 'jitsi' && auth.mode === 'anonymous') {
+    console.warn(
+      'Jitsi call started without JAAS/JWT credentials — participants may see "waiting for moderator". ' +
+        'Set JAAS_APP_ID + JAAS_API_KEY_ID + JAAS_PRIVATE_KEY (or JITSI_APP_ID + JITSI_JWT_SECRET).',
+    )
+  }
+
   const callId = uuid()
   const now = new Date().toISOString()
   const roomName =
@@ -146,12 +232,18 @@ export async function startVideoCall({ group, user, title, provider, io }) {
       ? `webrtc-${sanitizeRoomToken(group.slug)}-${sanitizeRoomToken(callId).slice(0, 12)}`
       : `StudySync${sanitizeRoomToken(group.slug)}${sanitizeRoomToken(callId).slice(0, 12)}`
 
-  const joinUrl =
+  const provisionalJoin =
     selectedProvider === 'jitsi'
-      ? buildJitsiJoinUrl(roomName, {
-          displayName: `${user.first_name} ${user.last_name}`.trim(),
-          userEmail: user.email,
-        })
+      ? buildAuthenticatedRoomUrl(
+          auth.mode === 'jaas' ? auth.domain || '8x8.vc' : config.jitsiDomain,
+          roomName,
+          null,
+          {
+            displayName: `${user.first_name} ${user.last_name}`.trim(),
+            userEmail: user.email,
+            appId: auth.mode === 'jaas' ? auth.appId : undefined,
+          },
+        )
       : `studysync://call/${group.slug}/${callId}`
 
   await VideoCall.create({
@@ -159,7 +251,7 @@ export async function startVideoCall({ group, user, title, provider, io }) {
     group_id: group.id,
     group_slug: group.slug,
     room_name: roomName,
-    join_url: joinUrl,
+    join_url: provisionalJoin,
     provider: selectedProvider,
     status: 'active',
     started_by_id: user.id,
@@ -183,10 +275,12 @@ export async function startVideoCall({ group, user, title, provider, io }) {
   })
 
   const call = await VideoCall.findOne({ id: callId }).lean()
-  const formatted = formatVideoCall(call, {
-    displayName: `${user.first_name} ${user.last_name}`.trim(),
-    userEmail: user.email,
-  })
+  const formatted = formatVideoCall(call, user, { moderator: true })
+
+  // Persist authenticated URL when JWT available
+  if (formatted.roomUrl) {
+    await VideoCall.updateOne({ id: callId }, { join_url: formatted.roomUrl })
+  }
 
   const message = {
     id: messageId,
@@ -227,9 +321,9 @@ export async function joinVideoCall({ group, callId, user, io }) {
   await VideoCall.updateOne({ id: callId }, { participant_ids: [...participantIds] })
 
   const updated = await VideoCall.findOne({ id: callId }).lean()
-  const formatted = formatVideoCall(updated, {
-    displayName: `${user.first_name} ${user.last_name}`.trim(),
-    userEmail: user.email,
+  // Joiner is moderator only if they started the call
+  const formatted = formatVideoCall(updated, user, {
+    moderator: updated.started_by_id === user.id,
   })
 
   if (io) {
@@ -258,7 +352,7 @@ export async function leaveVideoCall({ group, callId, user, io }) {
     throw notFound('Video call not found')
   }
   if (call.status !== 'active') {
-    return formatVideoCall(call)
+    return formatVideoCall(call, user)
   }
 
   const participantIds = (call.participant_ids ?? []).filter((id) => id !== user.id)
@@ -266,7 +360,7 @@ export async function leaveVideoCall({ group, callId, user, io }) {
   await VideoCall.updateOne({ id: callId }, { participant_ids: participantIds })
 
   const updated = await VideoCall.findOne({ id: callId }).lean()
-  const formatted = formatVideoCall(updated)
+  const formatted = formatVideoCall(updated, user)
 
   if (io) {
     const payload = {
@@ -292,7 +386,7 @@ export async function endVideoCall({ group, callId, user, io, reason = 'ended' }
     throw notFound('Video call not found')
   }
   if (call.status === 'ended') {
-    return formatVideoCall(call)
+    return formatVideoCall(call, user)
   }
 
   const now = new Date().toISOString()
@@ -320,7 +414,7 @@ export async function endVideoCall({ group, callId, user, io, reason = 'ended' }
   })
 
   const updated = await VideoCall.findOne({ id: callId }).lean()
-  const formatted = formatVideoCall(updated)
+  const formatted = formatVideoCall(updated, user)
   const message = {
     id: messageId,
     senderId: user.id,

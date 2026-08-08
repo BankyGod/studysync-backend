@@ -65,6 +65,19 @@ if (isProduction && !config.publicApiUrl) {
   )
 }
 
+const hasJaas =
+  (process.env.JAAS_APP_ID || process.env.JITSI_JAAS_APP_ID) &&
+  (process.env.JAAS_API_KEY_ID || process.env.JITSI_API_KEY_ID) &&
+  (process.env.JAAS_PRIVATE_KEY || process.env.JAAS_PRIVATE_KEY_PATH || process.env.JITSI_PRIVATE_KEY)
+const hasSelfHostedJwt = process.env.JITSI_JWT_SECRET && process.env.JITSI_APP_ID
+
+if (!hasJaas && !hasSelfHostedJwt && config.jitsiDomain.includes('meet.jit.si')) {
+  console.warn(
+    'Jitsi JWT not configured. Public meet.jit.si calls may show "waiting for moderator". ' +
+      'Configure JAAS_* credentials or JITSI_APP_ID + JITSI_JWT_SECRET, or use provider "webrtc".',
+  )
+}
+
 export function isAllowedCorsOrigin(origin) {
   if (!origin) return true
   const normalizedOrigin = origin.trim().replace(/\/$/, '')

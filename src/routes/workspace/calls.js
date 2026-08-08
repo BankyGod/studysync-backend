@@ -15,13 +15,6 @@ const router = Router({ mergeParams: true })
 
 router.use(authRequired, requireGroupMember)
 
-function displayInfo(user) {
-  return {
-    displayName: `${user.first_name} ${user.last_name}`.trim(),
-    userEmail: user.email,
-  }
-}
-
 router.get('/active', async (req, res, next) => {
   try {
     const call = await getActiveCallForGroup(req.group.id)
@@ -29,7 +22,11 @@ router.get('/active', async (req, res, next) => {
       res.json({ call: null })
       return
     }
-    res.json({ call: formatVideoCall(call, displayInfo(req.user)) })
+    res.json({
+      call: formatVideoCall(call, req.user, {
+        moderator: call.started_by_id === req.user.id,
+      }),
+    })
   } catch (error) {
     next(error)
   }
@@ -62,7 +59,11 @@ router.get('/:callId', async (req, res, next) => {
       throw notFound('Video call not found')
     }
 
-    res.json({ call: formatVideoCall(call, displayInfo(req.user)) })
+    res.json({
+      call: formatVideoCall(call, req.user, {
+        moderator: call.started_by_id === req.user.id,
+      }),
+    })
   } catch (error) {
     next(error)
   }
