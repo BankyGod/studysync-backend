@@ -1,46 +1,11 @@
-# Admin Portal API
+# Admin Portal API — frontend integration
 
 Backend contract for the **admin subdomain** SPA (e.g. `https://admin.your-app.onrender.com`).
 
-## Auth
+All counts and lists come from **live MongoDB data**.  
+**Zero / empty arrays mean there is no data yet** — not broken endpoints or dummy placeholders.
 
-1. Prefer **`POST /api/auth/admin/login`** for the admin subdomain (rejects students).
-2. Or use `POST /api/auth/login` — then check `user.role` is `admin` or `instructor`.
-3. Store the JWT and send `Authorization: Bearer <token>` on every admin request.
-4. Gate the portal UI with `user.role === 'admin' || user.role === 'instructor'`.
-5. `POST /api/admin/users` (create staff) requires **`admin` only**.
-6. Session check: `GET /api/auth/admin/me`
-
-Students cannot access `/api/admin/*` (403).
-
-Public registration (`POST /api/auth/register`) only allows `student` / `instructor` — never `admin`.
-
-### Bootstrap first admin
-
-**Option A — env (auto on server start):**
-
-```
-ADMIN_EMAIL=admin@studysync.com
-ADMIN_PASSWORD=SecurePass1
-ADMIN_NAME=System Admin
-```
-
-**Option B — script:**
-
-```bash
-node scripts/create-admin.js --email admin@studysync.com --password "SecurePass1" --name "System Admin"
-```
-
-## CORS (Render)
-
-Set on the **backend** service:
-
-```
-CORS_ORIGIN=https://study-sync-rb7b.onrender.com,https://admin.study-sync-rb7b.onrender.com
-PUBLIC_API_URL=https://studysync-backend-5i2a.onrender.com
-```
-
-Replace with your real student app + admin subdomain URLs (no trailing slash).
+---
 
 ## Base URL
 
@@ -48,25 +13,100 @@ Replace with your real student app + admin subdomain URLs (no trailing slash).
 https://studysync-backend-5i2a.onrender.com/api
 ```
 
-## Portal screens → endpoints
+Swagger: `GET /api-docs` (Admin tag).
 
-| Screen | Endpoints |
-|--------|-----------|
-| Dashboard | `GET /admin/dashboard` |
-| Overview report | `GET /admin/reports/overview` |
+---
+
+## Auth
+
+| Step | Endpoint |
+|------|----------|
+| Login (admin SPA) | `POST /auth/admin/login` |
+| Session check | `GET /auth/admin/me` |
+
+1. Prefer **`POST /auth/admin/login`** — rejects students.
+2. Or `POST /auth/login`, then require `user.role` is `admin` or `instructor`.
+3. Store the JWT; send `Authorization: Bearer <token>` on every `/admin/*` request.
+4. Gate UI: `role === 'admin' || role === 'instructor'`.
+5. `POST /admin/users` (create staff) requires **`admin` only**.
+
+Students get **403** on `/admin/*`.
+
+Public register never creates `admin` (only `student` / `instructor`).
+
+### Bootstrap first admin
+
+```bash
+# Option A — env on server start
+ADMIN_EMAIL=admin@studysync.com
+ADMIN_PASSWORD=SecurePass1
+ADMIN_NAME=System Admin
+
+# Option B — script
+node scripts/create-admin.js --email admin@studysync.com --password "SecurePass1" --name "System Admin"
+```
+
+---
+
+## CORS (Render)
+
+On the **backend** service:
+
+```
+CORS_ORIGIN=https://study-sync-rb7b.onrender.com,https://admin.study-sync-rb7b.onrender.com
+PUBLIC_API_URL=https://studysync-backend-5i2a.onrender.com
+```
+
+No trailing slashes. Use Bearer JWT (not cross-subdomain cookies).
+
+---
+
+## Screens → endpoints
+
+| Screen | Method | Path |
+|--------|--------|------|
+| Login | `POST` | `/auth/admin/login` |
+| Session | `GET` | `/auth/admin/me` |
+| Dashboard | `GET` | `/admin/dashboard` |
+| Students list | `GET` | `/admin/students?q=&level=&program=&onboarding=&matched=&page=1&limit=20` |
+| Student detail | `GET` | `/admin/students/:userId` |
+| Pods list | `GET` | `/admin/groups?subject=&courseNumber=&cohortId=` |
+| Pod detail | `GET` | `/admin/groups/:groupId` |
+| Cohorts list | `GET` | `/admin/cohorts` |
+| Create cohort | `POST` | `/admin/cohorts` |
+| Create staff | `POST` | `/admin/users` (**admin only**) |
+
+### Optional report pages
+
+| Screen | Path |
+|--------|------|
+| Overview | `GET /admin/reports/overview` |
 | Engagement | `GET /admin/reports/engagement` |
 | Pod health | `GET /admin/reports/pods` |
 | Reliability | `GET /admin/reports/reliability?limit=20` |
 | Courses | `GET /admin/reports/courses` |
 | Activity chart | `GET /admin/reports/activity?days=30` |
-| Students list | `GET /admin/students?q=&level=&program=&onboarding=&matched=&page=1&limit=20` |
-| Student detail | `GET /admin/students/:userId` |
-| Pods list | `GET /admin/groups?subject=&courseNumber=&cohortId=` |
-| Pod detail | `GET /admin/groups/:groupId` |
-| Cohorts | `GET/POST /admin/cohorts` |
-| Create staff | `POST /admin/users` (admin only) |
 
-## Sample: `GET /admin/dashboard`
+**Removed (do not call):** `POST /admin/seed`, `POST /admin/matching/run` — these were demo/stub endpoints.
+
+---
+
+## Field glossary
+
+| Field | Meaning |
+|-------|---------|
+| `id` | Stable UUID for the entity (user, group, cohort) |
+| `groupId` | Pod **slug** (URL-friendly course key), not the UUID |
+| `cohortId` | UUID of the cohort a pod belongs to (or `null`) |
+| `matched` | Student is in at least one pod |
+| `atRisk` | Reliability score present and **&lt; 60** |
+| `summary.*` | Dashboard card counts — bind these for Students / Pods / Cohorts / Matched |
+
+---
+
+## `GET /admin/dashboard`
+
+Bind overview cards to **`summary` only**:
 
 ```json
 {
@@ -76,10 +116,6 @@ https://studysync-backend-5i2a.onrender.com/api
     "cohorts": 2,
     "matched": 28
   },
-  "students": 42,
-  "pods": 8,
-  "cohorts": 2,
-  "matched": 28,
   "overview": {
     "students": 42,
     "pods": 8,
@@ -117,16 +153,48 @@ https://studysync-backend-5i2a.onrender.com/api
 }
 ```
 
-Instructor overview cards should bind:
-
-| Card | Field |
-|------|--------|
-| Students | `summary.students` (or top-level `students`) |
+| Card | Bind |
+|------|------|
+| Students | `summary.students` |
 | Pods | `summary.pods` |
 | Cohorts | `summary.cohorts` |
 | Matched | `summary.matched` |
 
-## Sample: create staff `POST /admin/users`
+There are **no** top-level duplicate `students` / `pods` aliases anymore.
+
+---
+
+## `GET /admin/cohorts`
+
+```json
+{
+  "cohorts": [
+    {
+      "id": "...",
+      "name": "Default Cohort",
+      "term": "2026",
+      "studentCount": 12,
+      "podCount": 3,
+      "pods": [{ "id": "...", "groupId": "cs101", "title": "CS 101 Pod" }],
+      "createdAt": "..."
+    }
+  ],
+  "total": 1
+}
+```
+
+**Default Cohort:** if pods exist with no `cohort_id` and no cohorts exist yet, the API creates one **Default Cohort** and attaches those pods. That is real grouping, not fake students.
+
+Create:
+
+```http
+POST /admin/cohorts
+{ "name": "Fall 2026", "term": "2026" }
+```
+
+---
+
+## `POST /admin/users` (admin only)
 
 ```json
 {
@@ -140,8 +208,20 @@ Instructor overview cards should bind:
 
 `role` must be `instructor` or `admin`.
 
+---
+
+## Students & pods (quick)
+
+**Students list** → `{ students, page, limit, total, totalPages }`  
+**Student detail** → profile, onboarding, courses, groups, reliability  
+
+**Pods list** → `{ groups: [{ id, groupId, title, members[], atRiskCount, ... }] }`  
+**Pod detail** → members + `stats` (tasks / messages / files)
+
+---
+
 ## Notes for the admin SPA
 
-- Use the same API host as the student app; only the frontend origin differs (subdomain).
-- Do not rely on cookies across subdomains — use Bearer JWT in `localStorage` / memory.
-- Swagger: `GET /api-docs` on the backend lists these routes under **Admin**.
+- Same API host as the student app; only the frontend origin differs.
+- Do not invent client-side demo numbers — use API responses as-is.
+- Matching for students still runs on the student app matching APIs, not an admin batch stub.

@@ -1129,12 +1129,31 @@ paths:
   /admin/dashboard:
     get:
       tags: [Admin]
-      summary: Admin portal home (overview + engagement + 7-day activity)
+      summary: Admin portal home — summary cards, overview, engagement, 7-day activity
+      description: >
+        Returns summary (card counts), overview (detailed totals), engagement, and recentActivity.
+        Bind Students/Pods/Cohorts/Matched cards to summary.*. Zeros mean empty DB, not dummy data.
       security:
         - bearerAuth: []
       responses:
         '200':
           description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [summary, overview, engagement, recentActivity]
+                properties:
+                  summary:
+                    type: object
+                    properties:
+                      students: { type: integer }
+                      pods: { type: integer }
+                      cohorts: { type: integer }
+                      matched: { type: integer }
+                  overview: { type: object }
+                  engagement: { type: object }
+                  recentActivity: { type: object }
   /admin/reports/overview:
     get:
       tags: [Admin]
@@ -1204,7 +1223,10 @@ paths:
   /admin/cohorts:
     get:
       tags: [Admin]
-      summary: List cohorts
+      summary: List cohorts (auto-creates Default Cohort if orphan pods exist)
+      description: >
+        Response shape is { cohorts, total }. If pods exist with no cohort and no cohorts
+        exist yet, creates Default Cohort and attaches those pods.
       security:
         - bearerAuth: []
       responses:
@@ -1229,24 +1251,6 @@ paths:
           description: Created
         '403':
           description: Only admins can create staff accounts
-  /admin/seed:
-    post:
-      tags: [Admin]
-      summary: Seed cohort students (dev tool)
-      security:
-        - bearerAuth: []
-      responses:
-        '201':
-          description: Created
-  /admin/matching/run:
-    post:
-      tags: [Admin]
-      summary: Run batch matching (stub)
-      security:
-        - bearerAuth: []
-      responses:
-        '202':
-          description: Started
   /admin/groups:
     get:
       tags: [Admin]

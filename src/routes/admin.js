@@ -15,7 +15,6 @@ import {
 } from '../db/models.js'
 import { authRequired, requireRole } from '../middleware/auth.js'
 import { conflict, forbidden, notFound, validationError } from '../utils/errors.js'
-import { courseToSlug } from '../utils/helpers.js'
 import { computeReliabilityBatch, computeUserReliability, formatReliability } from '../services/reliabilityService.js'
 import {
   getOverviewReport,
@@ -56,11 +55,6 @@ router.get('/dashboard', async (req, res, next) => {
 
     res.json({
       summary,
-      // Top-level aliases (frontend may read either shape)
-      students: summary.students,
-      pods: summary.pods,
-      cohorts: summary.cohorts,
-      matched: summary.matched,
       overview,
       engagement,
       recentActivity: activity,
@@ -160,9 +154,7 @@ router.get('/cohorts', async (req, res, next) => {
           id: c.id,
           name: c.name,
           term: c.term,
-          status: 'active',
           studentCount: memberUserIds.length,
-          groupCount: groups.length,
           podCount: groups.length,
           pods: groups.map((g) => ({
             id: g.id,
@@ -176,8 +168,6 @@ router.get('/cohorts', async (req, res, next) => {
 
     res.json({
       cohorts: result,
-      // aliases some frontends expect
-      items: result,
       total: result.length,
     })
   } catch (error) {
@@ -208,9 +198,7 @@ router.post('/cohorts', async (req, res, next) => {
       id,
       name: cleanName,
       term: cleanTerm,
-      status: 'active',
       studentCount: 0,
-      groupCount: 0,
       podCount: 0,
       pods: [],
       createdAt: now,
@@ -299,103 +287,6 @@ router.post('/users', requireAdminOnly, async (req, res, next) => {
     next(error)
   }
 })
-
-router.post('/seed', async (req, res, next) => {
-  try {
-    const { cohortId, studentCount = 10, courses = [] } = req.body ?? {}
-
-    if (!cohortId) {
-      throw validationError('cohortId is required')
-    }
-
-    const cohort = await Cohort.findOne({ id: cohortId }).lean()
-    if (!cohort) {
-      throw notFound('Cohort not found')
-    }
-
-    const now = new Date().toISOString()
-    let created = 0
-
-    for (let i = 0; i < studentCount; i += 1) {
-      const id = uuid()
-      const email = `student${Date.now()}${i}@studysync.local`
-      const passwordHash = bcrypt.hashSync('password123', 10)
-
-      await User.create({
-        id,
-        email,
-        password_hash: passwordHash,
-        first_name: 'Student',
-        last_name: `${i + 1}`,
-        student_id: `STU-${Date.now()}-${i}`,
-        university: 'Ghana Communication Technology University (GCTU)',
-        program: 'BSc. Computer Science',
-        level: '400',
-        role: 'student',
-        created_at: now,
-        updated_at: now,
-      })
-
-      await UserProfile.create({
-        user_id: id,
-        full_name: `Student ${i + 1}`,
-        student_role: 'BSc. Computer Science',
-        primary_university: 'GCTU',
-        location: 'Accra, Ghana',
-        updated_at: now,
-      })
-
-      created += 1
-    }
-
-    res.status(201).json({ cohortId, studentsCreated: created, courses })
-  } catch (error) {
-    next(error)
-  }
-})
-
-router.post('/matching/run', async (req, res, next) => {
-  try {
-    const { cohortId, courseCode } = req.body ?? {}
-
-    let subject
-    let courseNumber
-
-    if (courseCode) {
-      const group = await StudyGroup.findOne({ slug: courseCode }).lean()
-      if (group) {
-        subject = group.subject
-        courseNumber = group.course_number
-      }
-    }
-
-    if (!subject && coursesFromBody(req.body)) {
-      ;({ subject, courseNumber } = coursesFromBody(req.body))
-    }
-
-    if (!subject) {
-      throw validationError('courseCode or courses required')
-    }
-
-    const jobId = uuid()
-    res.status(202).json({
-      jobId,
-      status: 'running',
-      groupsCreated: 0,
-      studentsMatched: 0,
-      cohortId: cohortId ?? null,
-      courseCode: courseToSlug(subject, courseNumber),
-    })
-  } catch (error) {
-    next(error)
-  }
-})
-
-function coursesFromBody(body) {
-  const course = body.courses?.[0]
-  if (!course?.subject || !course?.courseNumber) return null
-  return { subject: course.subject, courseNumber: course.courseNumber }
-}
 
 router.get('/groups', async (req, res, next) => {
   try {
