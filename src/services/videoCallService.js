@@ -7,11 +7,18 @@ import {
   getJitsiAuthMode,
   mintJitsiJwt,
 } from './jitsiJwt.js'
+import {
+  getLiveKitConfig,
+  isLiveKitConfigured,
+  mintLiveKitToken,
+} from './livekitToken.js'
 
 const DEFAULT_ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
 ]
+
+const PROVIDERS = ['livekit', 'jitsi', 'webrtc']
 
 function sanitizeRoomToken(value) {
   return String(value || '')
@@ -64,22 +71,21 @@ function buildJitsiCredentials(call, user, { moderator = false } = {}) {
   }
 }
 
-export function buildEmbedConfig(call, user, { moderator = false } = {}) {
-  if (call.provider === 'webrtc') {
-    return {
-      mode: 'webrtc',
-      callId: call.id,
-      groupId: call.group_slug,
-      iceServers: parseIceServers(),
-      socketRoom: `call:${call.id}`,
-      displayName: `${user.first_name} ${user.last_name}`.trim(),
-    }
+function buildWebrtcEmbed(call, user) {
+  return {
+    mode: 'webrtc',
+    callId: call.id,
+    groupId: call.group_slug,
+    iceServers: parseIceServers(),
+    socketRoom: `call:${call.id}`,
+    displayName: `${user.first_name} ${user.last_name}`.trim(),
   }
+}
 
+function buildJitsiEmbed(call, user, { moderator = false } = {}) {
   const creds = buildJitsiCredentials(call, user, { moderator })
   const auth = getJitsiAuthMode()
 
-  // Shape for @jitsi/react-sdk — https://jitsi.github.io/handbook/docs/dev-guide/dev-guide-react-sdk
   const reactSdk = {
     component: auth.mode === 'jaas' ? 'JaaSMeeting' : 'JitsiMeeting',
     domain: creds.domain,
@@ -136,54 +142,106 @@ export function buildEmbedConfig(call, user, { moderator = false } = {}) {
   }
 }
 
-export function formatVideoCall(call, user, { moderator = false } = {}) {
-  if (call.provider === 'webrtc') {
-    return {
-      id: call.id,
-      groupId: call.group_slug,
-      status: call.status,
-      provider: call.provider,
-      roomName: call.room_name,
-      joinUrl: null,
-      roomUrl: null,
-      jwt: null,
-      embed: buildEmbedConfig(call, user, { moderator }),
-      startedById: call.started_by_id,
-      participantIds: call.participant_ids ?? [],
-      participantCount: (call.participant_ids ?? []).length,
-      startedAt: call.started_at,
-      endedAt: call.ended_at ?? undefined,
-      endedById: call.ended_by_id ?? undefined,
-    }
-  }
+async function buildLiveKitEmbed(call, user, { moderator = false } = {}) {
+  const displayName = `${user.first_name} ${user.last_name}`.trim()
+  const minted = await mintLiveKitToken({
+    roomName: call.room_name,
+    identity: user.id,
+    displayName,
+    canPublish: true,
+    canSubscribe: true,
+    roomAdmin: moderator,
+  })
 
-  const isStarter = user.id === call.started_by_id
-  const grantModerator = moderator || isStarter
-  const embed = buildEmbedConfig(call, user, { moderator: grantModerator })
-  const creds = buildJitsiCredentials(call, user, { moderator: grantModerator })
+  const cfg = getLiveKitConfig()
+  const url = minted?.url || cfg?.url || null
+  const token = minted?.token || null
 
   return {
+    mode: 'livekit',
+    url,
+    token,
+    roomName: call.room_name,
+    identity: user.id,
+    displayName,
+    callId: call.id,
+    groupId: call.group_slug,
+    moderator,
+    livekitConfigured: Boolean(token && url),
+  }
+}
+
+export async function buildEmbedConfig(call, user, { moderator = false } = {}) {
+  if (call.provider === 'webrtc') {
+    return buildWebrtcEmbed(call, user)
+  }
+  if (call.provider === 'livekit') {
+    return buildLiveKitEmbed(call, user, { moderator })
+  }
+  return buildJitsiEmbed(call, user, { moderator })
+}
+
+export async function formatVideoCall(call, user, { moderator = false } = {}) {
+  const isStarter = user?.id === call.started_by_id
+  const grantModerator = Boolean(moderator || isStarter)
+  const base = {
     id: call.id,
     groupId: call.group_slug,
     status: call.status,
     provider: call.provider,
     roomName: call.room_name,
-    // React SDK / iframe: prefer these
-    jwt: creds.jwt,
-    roomUrl: creds.roomUrl,
-    joinUrl: creds.roomUrl,
-    domain: creds.domain,
-    appId: creds.appId,
-    moderator: grantModerator,
-    authMode: creds.authMode,
-    jwtConfigured: Boolean(creds.jwt),
-    embed,
     startedById: call.started_by_id,
     participantIds: call.participant_ids ?? [],
     participantCount: (call.participant_ids ?? []).length,
     startedAt: call.started_at,
     endedAt: call.ended_at ?? undefined,
     endedById: call.ended_by_id ?? undefined,
+  }
+
+  if (call.provider === 'webrtc') {
+    return {
+      ...base,
+      joinUrl: null,
+      roomUrl: null,
+      url: null,
+      token: null,
+      jwt: null,
+      moderator: grantModerator,
+      embed: await buildEmbedConfig(call, user, { moderator: grantModerator }),
+    }
+  }
+
+  if (call.provider === 'livekit') {
+    const embed = await buildLiveKitEmbed(call, user, { moderator: grantModerator })
+    return {
+      ...base,
+      url: embed.url,
+      token: embed.token,
+      joinUrl: null,
+      roomUrl: null,
+      jwt: null,
+      moderator: grantModerator,
+      livekitConfigured: embed.livekitConfigured,
+      embed,
+    }
+  }
+
+  const embed = buildJitsiEmbed(call, user, { moderator: grantModerator })
+  const creds = buildJitsiCredentials(call, user, { moderator: grantModerator })
+
+  return {
+    ...base,
+    jwt: creds.jwt,
+    roomUrl: creds.roomUrl,
+    joinUrl: creds.roomUrl,
+    url: null,
+    token: null,
+    domain: creds.domain,
+    appId: creds.appId,
+    moderator: grantModerator,
+    authMode: creds.authMode,
+    jwtConfigured: Boolean(creds.jwt),
+    embed,
   }
 }
 
@@ -192,12 +250,20 @@ function callMessagePayload(call, formatted) {
     id: call.id,
     status: call.status,
     provider: call.provider,
-    joinUrl: formatted.joinUrl,
-    roomUrl: formatted.roomUrl,
+    joinUrl: formatted.joinUrl ?? null,
+    roomUrl: formatted.roomUrl ?? null,
     roomName: formatted.roomName,
-    jwt: formatted.jwt,
+    url: formatted.url ?? null,
+    token: formatted.token ?? null,
+    jwt: formatted.jwt ?? null,
     embed: formatted.embed,
   }
+}
+
+function selectProvider(requested) {
+  if (PROVIDERS.includes(requested)) return requested
+  if (isLiveKitConfigured()) return 'livekit'
+  return 'webrtc'
 }
 
 export async function getActiveCallForGroup(groupId) {
@@ -208,20 +274,25 @@ export async function startVideoCall({ group, user, title, provider, io }) {
   const existing = await getActiveCallForGroup(group.id)
   if (existing) {
     throw conflict('A video call is already active for this pod', {
-      call: formatVideoCall(existing, user, { moderator: existing.started_by_id === user.id }),
+      call: await formatVideoCall(existing, user, {
+        moderator: existing.started_by_id === user.id,
+      }),
     })
   }
 
-  // Prefer jitsi when JWT is configured (React SDK path); otherwise webrtc
-  const auth = getJitsiAuthMode()
-  const requested = ['webrtc', 'jitsi'].includes(provider) ? provider : null
-  const selectedProvider =
-    requested || (auth.mode === 'anonymous' ? 'webrtc' : 'jitsi')
+  const selectedProvider = selectProvider(provider)
+  const jitsiAuth = getJitsiAuthMode()
 
-  if (selectedProvider === 'jitsi' && auth.mode === 'anonymous') {
+  if (selectedProvider === 'livekit' && !isLiveKitConfigured()) {
+    console.warn(
+      'LiveKit call requested but LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET are not set.',
+    )
+  }
+
+  if (selectedProvider === 'jitsi' && jitsiAuth.mode === 'anonymous') {
     console.warn(
       'Jitsi call started without JAAS/JWT credentials — participants may see "waiting for moderator". ' +
-        'Set JAAS_APP_ID + JAAS_API_KEY_ID + JAAS_PRIVATE_KEY (or JITSI_APP_ID + JITSI_JWT_SECRET).',
+        'Set JAAS_* credentials, or prefer provider "livekit".',
     )
   }
 
@@ -232,19 +303,22 @@ export async function startVideoCall({ group, user, title, provider, io }) {
       ? `webrtc-${sanitizeRoomToken(group.slug)}-${sanitizeRoomToken(callId).slice(0, 12)}`
       : `StudySync${sanitizeRoomToken(group.slug)}${sanitizeRoomToken(callId).slice(0, 12)}`
 
-  const provisionalJoin =
-    selectedProvider === 'jitsi'
-      ? buildAuthenticatedRoomUrl(
-          auth.mode === 'jaas' ? auth.domain || '8x8.vc' : config.jitsiDomain,
-          roomName,
-          null,
-          {
-            displayName: `${user.first_name} ${user.last_name}`.trim(),
-            userEmail: user.email,
-            appId: auth.mode === 'jaas' ? auth.appId : undefined,
-          },
-        )
-      : `studysync://call/${group.slug}/${callId}`
+  let provisionalJoin = `studysync://call/${group.slug}/${callId}`
+  if (selectedProvider === 'jitsi') {
+    provisionalJoin = buildAuthenticatedRoomUrl(
+      jitsiAuth.mode === 'jaas' ? jitsiAuth.domain || '8x8.vc' : config.jitsiDomain,
+      roomName,
+      null,
+      {
+        displayName: `${user.first_name} ${user.last_name}`.trim(),
+        userEmail: user.email,
+        appId: jitsiAuth.mode === 'jaas' ? jitsiAuth.appId : undefined,
+      },
+    )
+  } else if (selectedProvider === 'livekit') {
+    const cfg = getLiveKitConfig()
+    provisionalJoin = cfg ? `${cfg.url}/${roomName}` : provisionalJoin
+  }
 
   await VideoCall.create({
     id: callId,
@@ -275,11 +349,13 @@ export async function startVideoCall({ group, user, title, provider, io }) {
   })
 
   const call = await VideoCall.findOne({ id: callId }).lean()
-  const formatted = formatVideoCall(call, user, { moderator: true })
+  const formatted = await formatVideoCall(call, user, { moderator: true })
 
-  // Persist authenticated URL when JWT available
-  if (formatted.roomUrl) {
-    await VideoCall.updateOne({ id: callId }, { join_url: formatted.roomUrl })
+  if (formatted.roomUrl || formatted.url) {
+    await VideoCall.updateOne(
+      { id: callId },
+      { join_url: formatted.roomUrl || formatted.url || provisionalJoin },
+    )
   }
 
   const message = {
@@ -321,26 +397,20 @@ export async function joinVideoCall({ group, callId, user, io }) {
   await VideoCall.updateOne({ id: callId }, { participant_ids: [...participantIds] })
 
   const updated = await VideoCall.findOne({ id: callId }).lean()
-  // Joiner is moderator only if they started the call
-  const formatted = formatVideoCall(updated, user, {
+  const formatted = await formatVideoCall(updated, user, {
     moderator: updated.started_by_id === user.id,
   })
 
   if (io) {
-    io.to(`workspace:${group.slug}`).emit('call:participant-joined', {
+    const payload = {
       groupId: group.slug,
       callId,
       userId: user.id,
       name: `${user.first_name} ${user.last_name}`.trim(),
       call: formatted,
-    })
-    io.to(`call:${callId}`).emit('call:participant-joined', {
-      groupId: group.slug,
-      callId,
-      userId: user.id,
-      name: `${user.first_name} ${user.last_name}`.trim(),
-      call: formatted,
-    })
+    }
+    io.to(`workspace:${group.slug}`).emit('call:participant-joined', payload)
+    io.to(`call:${callId}`).emit('call:participant-joined', payload)
   }
 
   return formatted
@@ -352,7 +422,7 @@ export async function leaveVideoCall({ group, callId, user, io }) {
     throw notFound('Video call not found')
   }
   if (call.status !== 'active') {
-    return formatVideoCall(call, user)
+    return await formatVideoCall(call, user)
   }
 
   const participantIds = (call.participant_ids ?? []).filter((id) => id !== user.id)
@@ -360,7 +430,7 @@ export async function leaveVideoCall({ group, callId, user, io }) {
   await VideoCall.updateOne({ id: callId }, { participant_ids: participantIds })
 
   const updated = await VideoCall.findOne({ id: callId }).lean()
-  const formatted = formatVideoCall(updated, user)
+  const formatted = await formatVideoCall(updated, user)
 
   if (io) {
     const payload = {
@@ -386,7 +456,7 @@ export async function endVideoCall({ group, callId, user, io, reason = 'ended' }
     throw notFound('Video call not found')
   }
   if (call.status === 'ended') {
-    return formatVideoCall(call, user)
+    return await formatVideoCall(call, user)
   }
 
   const now = new Date().toISOString()
@@ -414,7 +484,7 @@ export async function endVideoCall({ group, callId, user, io, reason = 'ended' }
   })
 
   const updated = await VideoCall.findOne({ id: callId }).lean()
-  const formatted = formatVideoCall(updated, user)
+  const formatted = await formatVideoCall(updated, user)
   const message = {
     id: messageId,
     senderId: user.id,

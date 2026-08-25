@@ -56,6 +56,7 @@ export const config = {
   uploadsDir: path.resolve(backendRoot, process.env.UPLOADS_DIR || './uploads'),
   publicApiUrl: (process.env.PUBLIC_API_URL || '').trim().replace(/\/$/, ''),
   jitsiDomain: (process.env.JITSI_DOMAIN || 'meet.jit.si').trim().replace(/^https?:\/\//, '').replace(/\/$/, ''),
+  livekitUrl: (process.env.LIVEKIT_URL || process.env.LIVEKIT_WS_URL || '').trim().replace(/\/$/, ''),
 }
 
 if (isProduction && !config.publicApiUrl) {
@@ -65,16 +66,15 @@ if (isProduction && !config.publicApiUrl) {
   )
 }
 
-const hasJaas =
-  (process.env.JAAS_APP_ID || process.env.JITSI_JAAS_APP_ID) &&
-  (process.env.JAAS_API_KEY_ID || process.env.JITSI_API_KEY_ID) &&
-  (process.env.JAAS_PRIVATE_KEY || process.env.JAAS_PRIVATE_KEY_PATH || process.env.JITSI_PRIVATE_KEY)
-const hasSelfHostedJwt = process.env.JITSI_JWT_SECRET && process.env.JITSI_APP_ID
+const hasLiveKit =
+  Boolean(config.livekitUrl) &&
+  Boolean(process.env.LIVEKIT_API_KEY?.trim()) &&
+  Boolean(process.env.LIVEKIT_API_SECRET?.trim())
 
-if (!hasJaas && !hasSelfHostedJwt && config.jitsiDomain.includes('meet.jit.si')) {
+if (!hasLiveKit) {
   console.warn(
-    'Jitsi JWT not configured. Public meet.jit.si calls may show "waiting for moderator". ' +
-      'Configure JAAS_* credentials or JITSI_APP_ID + JITSI_JWT_SECRET, or use provider "webrtc".',
+    'LiveKit not configured. Pod video defaults to Socket.IO webrtc until you set ' +
+      'LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET (LiveKit Cloud or self-hosted).',
   )
 }
 

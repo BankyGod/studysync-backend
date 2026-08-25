@@ -23,7 +23,7 @@ router.get('/active', async (req, res, next) => {
       return
     }
     res.json({
-      call: formatVideoCall(call, req.user, {
+      call: await formatVideoCall(call, req.user, {
         moderator: call.started_by_id === req.user.id,
       }),
     })
@@ -60,7 +60,7 @@ router.get('/:callId', async (req, res, next) => {
     }
 
     res.json({
-      call: formatVideoCall(call, req.user, {
+      call: await formatVideoCall(call, req.user, {
         moderator: call.started_by_id === req.user.id,
       }),
     })

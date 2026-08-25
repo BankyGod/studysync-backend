@@ -176,8 +176,10 @@ async function enrichMessageRows(messages) {
               id: call.id,
               status: call.status,
               provider: call.provider,
-              joinUrl: call.provider === 'jitsi' ? call.join_url : null,
               roomName: call.room_name,
+              joinUrl: call.provider === 'jitsi' ? call.join_url : null,
+              // LiveKit: client must POST .../join to mint a fresh token; URL alone is not enough
+              url: call.provider === 'livekit' ? call.join_url : null,
             }
           : { id: message.call_id, status: 'ended' },
       }

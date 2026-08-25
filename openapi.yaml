@@ -1018,7 +1018,7 @@ paths:
   /workspaces/{groupId}/calls:
     post:
       tags: [Workspaces]
-      summary: Start a pod video call (default webrtc = in-app; optional jitsi embed)
+      summary: Start a pod video call (default livekit when configured; else webrtc)
       security:
         - bearerAuth: []
       parameters:
@@ -1037,9 +1037,10 @@ paths:
                   type: string
                 provider:
                   type: string
-                  enum: [webrtc, jitsi]
-                  default: webrtc
-                  description: webrtc = in-app WebRTC. jitsi = embed in panel (do not redirect).
+                  enum: [livekit, webrtc, jitsi]
+                  description: >
+                    livekit = in-app via LiveKit (url + token). webrtc = Socket.IO signaling.
+                    jitsi = legacy embed. Default is livekit when LIVEKIT_* env is set, else webrtc.
       responses:
         '201':
           description: Call started

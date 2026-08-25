@@ -38,7 +38,7 @@ Copy `.env.example` to `.env` and adjust if needed:
 3. `POST /api/matching/find-group` — get matched into a pod (only if not already in a group for that course)
 4. Use `/api/workspaces/{groupId}/*` for tasks, chat, files, sessions, **video calls**
 
-**Pod video calls:** members start a call from chat (`POST /workspaces/{groupId}/calls`). The API returns a Jitsi `joinUrl`; other members get Socket.IO `call:started` and can join the same room.
+**Pod video calls:** members start a call from chat (`POST /workspaces/{groupId}/calls`). When LiveKit is configured, the API returns `url` + `token` for in-app `livekit-client`; other members get Socket.IO `call:started` and mint their own token via `POST .../join`. See [`docs/VIDEO_CALLS.md`](docs/VIDEO_CALLS.md).
 **Changing groups:** you cannot search/match again while already in a group for the same course. Leave first, then join or match again:
 
 - `DELETE /api/matching/groups/{groupId}/leave` — leave your current group

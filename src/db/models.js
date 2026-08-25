@@ -211,7 +211,7 @@ const videoCallSchema = new mongoose.Schema(
     group_slug: { type: String, required: true },
     room_name: { type: String, required: true },
     join_url: { type: String, required: true },
-    provider: { type: String, enum: ['jitsi', 'webrtc'], default: 'webrtc' },
+    provider: { type: String, enum: ['livekit', 'jitsi', 'webrtc'], default: 'livekit' },
     status: { type: String, enum: ['active', 'ended'], required: true },
     started_by_id: { type: String, required: true },
     participant_ids: { type: [String], default: [] },

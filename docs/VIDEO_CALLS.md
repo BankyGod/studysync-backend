@@ -1,139 +1,98 @@
-# Pod video calls + Jitsi React SDK
+# Pod video calls (LiveKit)
 
-Frontend should embed with [@jitsi/react-sdk](https://jitsi.github.io/handbook/docs/dev-guide/dev-guide-react-sdk) — **do not redirect**.
+Primary in-app video uses **LiveKit**. The StudySync API mints short-lived access tokens; media goes through LiveKit Cloud (or your self-hosted LiveKit server). Do **not** open a browser URL / deep-link for joins.
 
-## Why you see “Waiting for the moderator”
+## Env (Render / `.env`)
 
-Public `meet.jit.si` often blocks anonymous room starts. The starter needs a **moderator JWT**.
+```
+LIVEKIT_URL=wss://your-project.livekit.cloud
+LIVEKIT_API_KEY=APIxxxxxxxx
+LIVEKIT_API_SECRET=secretxxxxxxxx
+```
 
-StudySync mints that JWT when you configure **8x8 JaaS** or a **self-hosted Jitsi** secret.
+Create a project at [cloud.livekit.io](https://cloud.livekit.io) and copy the WebSocket URL + API key/secret.
+
+Self-host: same three vars pointing at your LiveKit server (`wss://livekit.example.com`).
+
+Without these vars, `POST .../calls` falls back to Socket.IO `webrtc`.
 
 ---
 
-## Backend response (Jitsi)
+## Backend response (LiveKit)
 
-`POST /api/workspaces/:groupId/calls` with `{ "provider": "jitsi" }`:
+`POST /api/workspaces/:groupId/calls` (default when LiveKit is configured):
 
 ```json
 {
   "call": {
     "id": "...",
-    "provider": "jitsi",
+    "provider": "livekit",
     "roomName": "StudySynccs101abc",
-    "domain": "8x8.vc",
-    "appId": "vpaas-magic-cookie-...",
-    "jwt": "eyJ...",
-    "roomUrl": "https://8x8.vc/StudySynccs101abc?jwt=eyJ...",
-    "joinUrl": "https://8x8.vc/StudySynccs101abc?jwt=eyJ...",
+    "url": "wss://your-project.livekit.cloud",
+    "token": "eyJ...",
     "moderator": true,
-    "jwtConfigured": true,
+    "livekitConfigured": true,
     "embed": {
-      "mode": "jaas",
-      "jwt": "eyJ...",
-      "roomUrl": "...",
-      "reactSdk": {
-        "component": "JaaSMeeting",
-        "appId": "vpaas-magic-cookie-...",
-        "roomName": "StudySynccs101abc",
-        "jwt": "eyJ...",
-        "userInfo": { "displayName": "Ada", "email": "ada@..." },
-        "configOverwrite": { "prejoinPageEnabled": false, "disableDeepLinking": true }
-      }
+      "mode": "livekit",
+      "url": "wss://your-project.livekit.cloud",
+      "token": "eyJ...",
+      "roomName": "StudySynccs101abc",
+      "identity": "<user-id>",
+      "displayName": "Ada Lovelace"
     }
   }
 }
 ```
 
-- **Starter** → `moderator: true` + moderator JWT  
-- **Joiner** (`POST .../join`) → participant JWT (`moderator: false` unless they are the starter)
+- **Starter** → `moderator: true` + `roomAdmin` grant on the token  
+- **Joiner** (`POST .../calls/:id/join`) → new token for that user (`moderator: false` unless they started the call)
 
-If `jwtConfigured: false`, you are still on anonymous `meet.jit.si` and the lobby/moderator wait will persist.
-
----
-
-## Env (Render / `.env`)
-
-### Option A — 8x8 JaaS (recommended for React SDK `JaaSMeeting`)
-
-```
-JITSI_DOMAIN=8x8.vc
-JAAS_APP_ID=vpaas-magic-cookie-xxxxxxxx
-JAAS_API_KEY_ID=your-api-key-id
-JAAS_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
-```
-
-Or `JAAS_PRIVATE_KEY_PATH=/path/to/key.pem`
-
-### Option B — Self-hosted Jitsi (HS256)
-
-```
-JITSI_DOMAIN=jitsi.yourschool.edu
-JITSI_APP_ID=studysync
-JITSI_JWT_SECRET=long-random-secret
-```
-
-(Your Prosody must enable JWT auth with the same app id/secret.)
-
-### Not enough alone
-
-```
-JITSI_DOMAIN=meet.jit.si
-```
-
-…without JAAS/JWT keys → no moderator token → “waiting for moderator”.
+If `livekitConfigured: false`, credentials are missing on the server.
 
 ---
 
-## Frontend (`@jitsi/react-sdk`)
+## Frontend (`livekit-client` or `@livekit/components-react`)
 
 ```bash
-npm install @jitsi/react-sdk
+npm install livekit-client
 ```
 
 ```jsx
-import { JitsiMeeting, JaaSMeeting } from '@jitsi/react-sdk'
+import { Room, RoomEvent } from 'livekit-client'
 
-const sdk = call.embed.reactSdk
+const room = new Room()
+await room.connect(call.url, call.token)
+await room.localParticipant.setCameraEnabled(true)
+await room.localParticipant.setMicrophoneEnabled(true)
 
-{sdk.component === 'JaaSMeeting' ? (
-  <JaaSMeeting
-    appId={sdk.appId}
-    roomName={sdk.roomName}
-    jwt={sdk.jwt}
-    userInfo={sdk.userInfo}
-    configOverwrite={sdk.configOverwrite}
-    interfaceConfigOverwrite={sdk.interfaceConfigOverwrite}
-    getIFrameRef={(iframe) => {
-      iframe.style.height = '70vh'
-      iframe.style.width = '100%'
-    }}
-  />
-) : (
-  <JitsiMeeting
-    domain={sdk.domain}
-    roomName={sdk.roomName}
-    jwt={sdk.jwt}
-    userInfo={sdk.userInfo}
-    configOverwrite={sdk.configOverwrite}
-    interfaceConfigOverwrite={sdk.interfaceConfigOverwrite}
-    getIFrameRef={(iframe) => {
-      iframe.style.height = '70vh'
-      iframe.style.width = '100%'
-    }}
-  />
-)}
+// Leave / End for all still use StudySync REST:
+// POST .../calls/:id/leave
+// POST .../calls/:id/end
 ```
 
-Pass `jwt={call.jwt}` always when present.
+Or with components:
+
+```jsx
+import { LiveKitRoom, VideoConference } from '@livekit/components-react'
+import '@livekit/components-styles'
+
+<LiveKitRoom token={call.token} serverUrl={call.url} connect={true} video={true} audio={true}>
+  <VideoConference />
+</LiveKitRoom>
+```
 
 ---
 
-## Camera error `gum.general`
+## Providers
 
-Still requires HTTPS (or localhost), camera permission, and nothing else using the webcam. Separate from moderator JWT.
+| `provider` | When |
+|---|---|
+| `livekit` | Default when `LIVEKIT_*` is set |
+| `webrtc` | Fallback / explicit Socket.IO signaling |
+| `jitsi` | Legacy optional; needs JAAS/JWT or open rooms |
 
 ---
 
-## WebRTC fallback
+## Camera / mic
 
-`{ "provider": "webrtc" }` uses in-app Socket.IO signaling (`call:join-room`, `webrtc:signal`) — no Jitsi JWT. See signaling section in older notes / `socket.js`.
+HTTPS (or localhost) + browser permission. Separate from token minting.

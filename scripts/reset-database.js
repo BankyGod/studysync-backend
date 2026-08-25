@@ -1,4 +1,4 @@
-/**
+  /**
  * Wipes all MongoDB data and local upload files. Documentation / ops only.
  * Usage: node scripts/reset-database.js
  */
