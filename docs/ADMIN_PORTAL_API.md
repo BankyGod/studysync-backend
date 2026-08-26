@@ -213,10 +213,20 @@ POST /admin/cohorts
 ## Students & pods (quick)
 
 **Students list** → `{ students, page, limit, total, totalPages }`  
-**Student detail** → profile, onboarding, courses, groups, reliability  
+Each student may include `avatarUrl` (signed URL; image bytes stored in Mongo `user_profiles.avatar_data`).  
+
+**Student detail** → profile, onboarding, courses, groups, reliability, `avatarUrl`  
 
 **Pods list** → `{ groups: [{ id, groupId, title, members[], atRiskCount, ... }] }`  
+Members include `avatarUrl` when a photo exists.  
+
 **Pod detail** → members + `stats` (tasks / messages / files)
+
+### Profile photos (students)
+
+- Upload: `POST /api/users/me/avatar` (multipart field `photo` or `avatar`) — stored in DB + disk cache  
+- Delete: `DELETE /api/users/me/avatar`  
+- Image: `GET /api/users/:userId/avatar?exp=&sig=` (signed) or with Bearer as admin/instructor / same pod  
 
 ---
 

@@ -8,6 +8,7 @@ import {
   listCourseGroups,
   runMatchingForUser,
 } from '../services/matchingService.js'
+import { groupSizeLimit } from '../utils/helpers.js'
 import { loadProfile } from './onboarding.js'
 
 const router = Router()
@@ -62,7 +63,18 @@ router.post('/groups/:groupId/join', async (req, res, next) => {
     const profile = await loadProfile(req.user.id)
     const studyPreferences = req.body?.studyPreferences ?? profile?.studyPreferences ?? { groupSize: 'medium' }
     const match = await joinGroup(req.user, req.params.groupId, studyPreferences)
-    res.status(200).json({ match })
+
+    const memberCount = Array.isArray(match?.members) ? match.members.length : 0
+    const maxSize = groupSizeLimit(studyPreferences.groupSize ?? 'medium')
+
+    res.status(200).json({
+      match,
+      groupId: match.groupId,
+      title: match.groupTitle,
+      memberCount,
+      maxSize,
+      openSlots: Math.max(0, maxSize - memberCount),
+    })
   } catch (error) {
     next(error)
   }

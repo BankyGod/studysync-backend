@@ -533,7 +533,11 @@ paths:
   /matching/groups/{groupId}/join:
     post:
       tags: [Matching]
-      summary: Join a specific study group (leave current group for that course first)
+      summary: Join an open study pod by slug or id
+      description: >
+        Requires authenticated student enrolled in the pod's course.
+        Rejects with 409 if the pod is full or the student is already in another
+        pod for the same course. Returns match plus groupId/title/memberCount/openSlots.
       security:
         - bearerAuth: []
       parameters:
@@ -542,11 +546,16 @@ paths:
           required: true
           schema:
             type: string
+          description: Pod slug (groupId) or UUID
       responses:
         '200':
           description: Joined group
+        '403':
+          description: Not enrolled in this course
+        '404':
+          description: Group not found
         '409':
-          description: Already in a group for this course
+          description: Pod is full, or already in a group for this course
   /matching/groups/{groupId}/leave:
     delete:
       tags: [Matching]
@@ -580,7 +589,11 @@ paths:
   /matching/course/{courseCode}:
     get:
       tags: [Matching]
-      summary: List groups for a course
+      summary: List pods for a course code (openSlots for join UI)
+      description: >
+        courseCode is the slug form (e.g. computer-science-401).
+        Each group includes groupId, title, memberCount, maxSize, openSlots.
+        Frontend should only offer join when openSlots > 0.
       security:
         - bearerAuth: []
       parameters:

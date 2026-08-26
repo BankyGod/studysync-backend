@@ -79,6 +79,12 @@ async function authorizeAvatarAccess(req, targetUserId) {
     if (payload.sub === targetUserId) {
       return true
     }
+
+    const viewer = await User.findOne({ id: payload.sub }, { role: 1 }).lean()
+    if (viewer && ['admin', 'instructor'].includes(viewer.role)) {
+      return true
+    }
+
     return usersShareGroup(payload.sub, targetUserId)
   } catch {
     return false

@@ -16,6 +16,7 @@ import {
 import { authRequired, requireRole } from '../middleware/auth.js'
 import { conflict, forbidden, notFound, validationError } from '../utils/errors.js'
 import { computeReliabilityBatch, computeUserReliability, formatReliability } from '../services/reliabilityService.js'
+import { avatarUrlForUser } from '../utils/profileAvatar.js'
 import {
   getOverviewReport,
   getEngagementReport,
@@ -318,6 +319,12 @@ router.get('/groups', async (req, res, next) => {
           .lean()
       : []
     const userById = Object.fromEntries(users.map((u) => [u.id, u]))
+    const memberProfiles = allMemberIds.length
+      ? await UserProfile.find({ user_id: { $in: allMemberIds } })
+          .select('user_id avatar_mime_type avatar_storage_key avatar_byte_length')
+          .lean()
+      : []
+    const profileByUserId = Object.fromEntries(memberProfiles.map((p) => [p.user_id, p]))
 
     const result = await Promise.all(
       groups.map(async (g) => {
@@ -330,6 +337,7 @@ router.get('/groups', async (req, res, next) => {
             reliabilityByUser[m.user_id] || { score: null, tasksScored: 0, scope: 'group', groupId: g.slug },
           )
           const atRisk = reliability.score !== null && reliability.score < 60
+          const avatarUrl = avatarUrlForUser(m.user_id, profileByUserId[m.user_id])
 
           return {
             id: m.user_id,
@@ -341,6 +349,7 @@ router.get('/groups', async (req, res, next) => {
             joinedAt: m.joined_at,
             reliability,
             atRisk,
+            ...(avatarUrl ? { avatarUrl } : {}),
           }
         })
 
@@ -382,6 +391,12 @@ router.get('/groups/:groupId', async (req, res, next) => {
       ? await User.find({ id: { $in: members.map((m) => m.user_id) } }).lean()
       : []
     const userById = Object.fromEntries(users.map((u) => [u.id, u]))
+    const memberProfiles = members.length
+      ? await UserProfile.find({ user_id: { $in: members.map((m) => m.user_id) } })
+          .select('user_id avatar_mime_type avatar_storage_key avatar_byte_length')
+          .lean()
+      : []
+    const profileByUserId = Object.fromEntries(memberProfiles.map((p) => [p.user_id, p]))
     const reliabilityByUser = await computeReliabilityBatch(
       members.map((m) => m.user_id),
       group.id,
@@ -420,6 +435,7 @@ router.get('/groups/:groupId', async (req, res, next) => {
           groupId: group.slug,
         },
       )
+      const avatarUrl = avatarUrlForUser(m.user_id, profileByUserId[m.user_id])
       return {
         id: m.user_id,
         name: u ? `${u.first_name} ${u.last_name}`.trim() : 'Unknown',
@@ -430,6 +446,7 @@ router.get('/groups/:groupId', async (req, res, next) => {
         initials: m.initials,
         reliability,
         atRisk: reliability.score !== null && reliability.score < 60,
+        ...(avatarUrl ? { avatarUrl } : {}),
       }
     })
 
@@ -525,12 +542,22 @@ router.get('/students', async (req, res, next) => {
       : []
     const groupById = Object.fromEntries(groups.map((g) => [g.id, g]))
 
+    const pageIds = pageRows.map((s) => s.id)
+    const profiles = pageIds.length
+      ? await UserProfile.find({ user_id: { $in: pageIds } })
+          .select('user_id avatar_mime_type avatar_storage_key avatar_byte_length')
+          .lean()
+      : []
+    const profileByUserId = Object.fromEntries(profiles.map((p) => [p.user_id, p]))
+
     const result = pageRows.map((s) => {
       const userGroups = memberships
         .filter((m) => m.user_id === s.id)
         .map((m) => groupById[m.group_id])
         .filter(Boolean)
         .map((g) => ({ id: g.id, groupId: g.slug, title: g.title }))
+
+      const avatarUrl = avatarUrlForUser(s.id, profileByUserId[s.id])
 
       return {
         id: s.id,
@@ -544,6 +571,7 @@ router.get('/students', async (req, res, next) => {
         matched: userGroups.length > 0,
         groups: userGroups,
         createdAt: s.created_at,
+        ...(avatarUrl ? { avatarUrl } : {}),
       }
     })
 
@@ -578,6 +606,7 @@ router.get('/students/:userId', async (req, res, next) => {
       : []
 
     const reliability = formatReliability(await computeUserReliability(user.id))
+    const avatarUrl = avatarUrlForUser(user.id, profile)
 
     res.json({
       id: user.id,
@@ -589,6 +618,7 @@ router.get('/students/:userId', async (req, res, next) => {
       level: user.level,
       university: user.university,
       createdAt: user.created_at,
+      ...(avatarUrl ? { avatarUrl } : {}),
       profile: profile
         ? {
             fullName: profile.full_name,
@@ -596,6 +626,7 @@ router.get('/students/:userId', async (req, res, next) => {
             primaryUniversity: profile.primary_university,
             secondaryUniversity: profile.secondary_university ?? '',
             location: profile.location,
+            ...(avatarUrl ? { avatarUrl } : {}),
           }
         : null,
       onboarding: onboarding

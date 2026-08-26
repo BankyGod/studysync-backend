@@ -16,12 +16,18 @@ import {
   pickAvatarColor,
 } from '../utils/helpers.js'
 import { loadProfile } from '../routes/onboarding.js'
-import { alreadyInGroup, notFound, validationError } from '../utils/errors.js'
+import { alreadyInGroup, conflict, forbidden, notFound, validationError } from '../utils/errors.js'
 import { computeReliabilityBatch, formatReliability } from './reliabilityService.js'
 
 const MATCHING_STEPS = ['course', 'preferences', 'compatibility', 'searching', 'finalizing']
 const STEP_PROGRESS = [20, 40, 65, 85, 100]
 const MATCHING_STEP_DELAY_MS = 250
+/** Default pod capacity for open-slot listing (matches groupSizeLimit('medium')). */
+export const DEFAULT_POD_CAPACITY = groupSizeLimit('medium')
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
 
 function parseAvailability(value) {
   if (!value) return []
@@ -98,13 +104,36 @@ async function findOrCreateGroup(subject, courseNumber) {
   return StudyGroup.findOne({ id }).lean()
 }
 
+/** Extra pod when the primary course group is full. */
+async function createAdditionalGroup(subject, courseNumber) {
+  const now = new Date().toISOString()
+  const id = uuid()
+  const slug = `${courseToSlug(subject, courseNumber)}-${id.slice(0, 8)}`
+
+  await StudyGroup.create({
+    id,
+    slug,
+    title: buildGroupTitle(subject, courseNumber),
+    subject,
+    course_number: courseNumber,
+    created_at: now,
+  })
+
+  return StudyGroup.findOne({ id }).lean()
+}
+
 async function completeMatchingJob({ jobId, user, subject, courseNumber, studyPreferences, io }) {
-  let group = await findBestGroup(subject, courseNumber, studyPreferences.groupSize)
+  const size = studyPreferences.groupSize ?? 'medium'
+  let group = await findBestGroup(subject, courseNumber, size)
   if (!group) {
     group = await findOrCreateGroup(subject, courseNumber)
+    const memberCount = await GroupMember.countDocuments({ group_id: group.id })
+    if (memberCount >= groupSizeLimit(size)) {
+      group = await createAdditionalGroup(subject, courseNumber)
+    }
   }
 
-  await assertGroupHasSpace(group.id, studyPreferences.groupSize)
+  await assertGroupHasSpace(group.id, size)
   await addMemberToGroup(group.id, user)
 
   const completedAt = new Date().toISOString()
@@ -288,13 +317,32 @@ export async function assertNotInCourseGroup(userId, subject, courseNumber) {
 
 async function assertGroupHasSpace(groupId, groupSize = 'medium') {
   const memberCount = await GroupMember.countDocuments({ group_id: groupId })
-  if (memberCount >= groupSizeLimit(groupSize)) {
-    throw validationError('This study group is full')
+  const limit = groupSizeLimit(groupSize)
+  if (memberCount >= limit) {
+    throw conflict('This study group is full', {
+      memberCount,
+      maxSize: limit,
+      openSlots: 0,
+    })
+  }
+}
+
+async function assertEnrolledInCourse(userId, subject, courseNumber) {
+  const enrolled = await UserCourse.findOne({
+    user_id: userId,
+    subject,
+    course_number: courseNumber,
+  }).lean()
+
+  if (!enrolled) {
+    throw forbidden('You must be enrolled in this course to join the pod')
   }
 }
 
 export async function leaveGroup(userId, groupSlug) {
-  const group = await StudyGroup.findOne({ slug: groupSlug }).lean()
+  const group = await StudyGroup.findOne({
+    $or: [{ slug: groupSlug }, { id: groupSlug }],
+  }).lean()
   if (!group) {
     throw notFound('Study group not found')
   }
@@ -311,10 +359,14 @@ export async function leaveGroup(userId, groupSlug) {
 }
 
 export async function joinGroup(user, groupSlug, studyPreferences = { groupSize: 'medium' }) {
-  const group = await StudyGroup.findOne({ slug: groupSlug }).lean()
+  const group = await StudyGroup.findOne({
+    $or: [{ slug: groupSlug }, { id: groupSlug }],
+  }).lean()
   if (!group) {
     throw notFound('Study group not found')
   }
+
+  await assertEnrolledInCourse(user.id, group.subject, group.course_number)
 
   const alreadyMember = await GroupMember.findOne({ group_id: group.id, user_id: user.id }).lean()
   if (alreadyMember) {
@@ -427,18 +479,54 @@ export async function getMatchingJob(jobId, userId) {
 }
 
 export async function listCourseGroups(courseCode) {
-  const slug = courseCode.toLowerCase().trim()
-  const groups = await StudyGroup.find({ slug }).lean()
+  const slug = decodeURIComponent(String(courseCode || ''))
+    .trim()
+    .toLowerCase()
+  if (!slug) return []
+
+  const capacity = DEFAULT_POD_CAPACITY
+  const slugPattern = new RegExp(`^${escapeRegex(slug)}(-[a-z0-9]+)?$`, 'i')
+
+  let groups = await StudyGroup.find({
+    $or: [{ slug }, { slug: slugPattern }],
+  }).lean()
+
+  // Resolve all pods for the same subject + course number
+  if (groups.length > 0) {
+    const seed = groups[0]
+    groups = await StudyGroup.find({
+      subject: seed.subject,
+      course_number: seed.course_number,
+    })
+      .sort({ created_at: 1 })
+      .lean()
+  } else {
+    // Parse "computer-science-401" → match groups whose courseToSlug equals courseCode
+    const parts = slug.split('-').filter(Boolean)
+    if (parts.length >= 2) {
+      const courseNumber = parts[parts.length - 1]
+      const candidates = await StudyGroup.find({
+        course_number: new RegExp(`^${escapeRegex(courseNumber)}$`, 'i'),
+      }).lean()
+      groups = candidates
+        .filter((g) => courseToSlug(g.subject, g.course_number) === slug)
+        .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))
+    }
+  }
 
   return Promise.all(
     groups.map(async (g) => {
       const memberCount = await GroupMember.countDocuments({ group_id: g.id })
+      const openSlots = Math.max(0, capacity - memberCount)
 
       return {
         groupId: g.slug,
         title: g.title,
         memberCount,
-        openSlots: Math.max(0, 6 - memberCount),
+        maxSize: capacity,
+        openSlots,
+        courseLabel: formatCourseLabel(g.subject, g.course_number),
+        courseCode: courseToSlug(g.subject, g.course_number),
       }
     }),
   )
