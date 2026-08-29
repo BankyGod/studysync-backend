@@ -522,14 +522,49 @@ paths:
   /matching/find-group:
     post:
       tags: [Matching]
-      summary: Start matching for a study group (blocked if already in a group for that course)
+      summary: Match into an open pod, or create the next numbered pod if all are full
+      description: >
+        Prefers joining an existing open pod for the course. Creates biology-101-N style
+        pods only when none exist or every pod is full. Never creates a second open pod
+        while seats remain.
       security:
         - bearerAuth: []
       responses:
+        '200':
+          description: Matching completed (joined or created pod)
         '202':
-          description: Matching job started or completed
+          description: Matching job started
         '409':
           description: Already in a group for this course
+  /matching/groups:
+    post:
+      tags: [Matching]
+      summary: Create a numbered course pod (no duplicate open pods)
+      description: >
+        Returns 409 OPEN_POD_EXISTS with openGroups when an open pod still has seats.
+        Otherwise creates the next Pod N (slug course-slug-N) and adds the creator.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [course]
+              properties:
+                course:
+                  type: object
+                  properties:
+                    subject: { type: string }
+                    courseNumber: { type: string }
+                title: { type: string }
+                podNumber: { type: integer }
+      responses:
+        '201':
+          description: Pod created
+        '409':
+          description: OPEN_POD_EXISTS or ALREADY_IN_GROUP
   /matching/groups/{groupId}/join:
     post:
       tags: [Matching]
@@ -589,11 +624,10 @@ paths:
   /matching/course/{courseCode}:
     get:
       tags: [Matching]
-      summary: List pods for a course code (openSlots for join UI)
+      summary: List all pods for a course (open and full)
       description: >
-        courseCode is the slug form (e.g. computer-science-401).
-        Each group includes groupId, title, memberCount, maxSize, openSlots.
-        Frontend should only offer join when openSlots > 0.
+        Returns every pod for the course with groupId, title, podNumber, memberCount,
+        maxSize, openSlots. Frontend shows join when openSlots > 0 and create when all full.
       security:
         - bearerAuth: []
       parameters:

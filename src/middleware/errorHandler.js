@@ -31,7 +31,12 @@ export function errorHandler(err, req, res, next) {
     error: {
       code,
       message,
-      ...(err.details ? { details: err.details } : {}),
+      ...(err.details && typeof err.details === 'object' && !Array.isArray(err.details)
+        ? err.details
+        : {}),
+      ...(err.details && (typeof err.details !== 'object' || Array.isArray(err.details))
+        ? { details: err.details }
+        : {}),
     },
   })
 }

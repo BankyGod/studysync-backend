@@ -8,7 +8,6 @@ import {
   UserCourse,
 } from '../db/models.js'
 import {
-  buildGroupTitle,
   courseToSlug,
   formatCourseLabel,
   getInitials,
@@ -16,7 +15,14 @@ import {
   pickAvatarColor,
 } from '../utils/helpers.js'
 import { loadProfile } from '../routes/onboarding.js'
-import { alreadyInGroup, conflict, forbidden, notFound, validationError } from '../utils/errors.js'
+import {
+  alreadyInGroup,
+  conflict,
+  forbidden,
+  notFound,
+  openPodExists,
+  validationError,
+} from '../utils/errors.js'
 import { computeReliabilityBatch, formatReliability } from './reliabilityService.js'
 
 const MATCHING_STEPS = ['course', 'preferences', 'compatibility', 'searching', 'finalizing']
@@ -77,26 +83,100 @@ async function ensureUserCourseEnrolled(userId, subject, courseNumber) {
   })
 }
 
-async function findOrCreateGroup(subject, courseNumber) {
-  let group = await StudyGroup.findOne({ slug: courseToSlug(subject, courseNumber) }).lean()
-  if (group) return group
+function courseBaseSlug(subject, courseNumber) {
+  return courseToSlug(subject, courseNumber)
+}
 
+function formatPodTitle(subject, courseNumber, podNumber) {
+  return `${formatCourseLabel(subject, courseNumber)} · Pod ${podNumber}`
+}
+
+function numberedPodSlug(subject, courseNumber, podNumber) {
+  return `${courseBaseSlug(subject, courseNumber)}-${podNumber}`
+}
+
+function extractPodNumber(group) {
+  if (!group) return null
+  const base = courseBaseSlug(group.subject, group.course_number)
+  const slug = String(group.slug || '')
+  if (slug === base) return 1
+  const slugMatch = slug.match(new RegExp(`^${escapeRegex(base)}-(\\d+)$`, 'i'))
+  if (slugMatch) return Number(slugMatch[1])
+  const titleMatch = String(group.title || '').match(/Pod\s+(\d+)/i)
+  if (titleMatch) return Number(titleMatch[1])
+  return null
+}
+
+async function findGroupsForCourse(subject, courseNumber) {
+  const base = courseBaseSlug(subject, courseNumber)
+  const groups = await StudyGroup.find({
+    $or: [
+      {
+        subject: new RegExp(`^${escapeRegex(subject.trim())}$`, 'i'),
+        course_number: new RegExp(`^${escapeRegex(courseNumber.trim())}$`, 'i'),
+      },
+      { slug: base },
+      { slug: new RegExp(`^${escapeRegex(base)}-\\d+$`, 'i') },
+    ],
+  }).lean()
+
+  const byId = new Map()
+  for (const g of groups) byId.set(g.id, g)
+  return [...byId.values()].sort((a, b) => {
+    const na = extractPodNumber(a) ?? 0
+    const nb = extractPodNumber(b) ?? 0
+    if (na !== nb) return na - nb
+    return String(a.created_at).localeCompare(String(b.created_at))
+  })
+}
+
+async function toPodSummary(group, capacity = DEFAULT_POD_CAPACITY) {
+  const memberCount = await GroupMember.countDocuments({ group_id: group.id })
+  const podNumber = extractPodNumber(group) ?? 1
+  return {
+    groupId: group.slug,
+    title: group.title,
+    podNumber,
+    memberCount,
+    maxSize: capacity,
+    openSlots: Math.max(0, capacity - memberCount),
+    courseLabel: formatCourseLabel(group.subject, group.course_number),
+    courseCode: courseBaseSlug(group.subject, group.course_number),
+  }
+}
+
+async function listPodSummariesForCourse(subject, courseNumber) {
+  const groups = await findGroupsForCourse(subject, courseNumber)
+  return Promise.all(groups.map((g) => toPodSummary(g)))
+}
+
+function nextPodNumber(summaries = []) {
+  const numbers = summaries
+    .map((g) => g.podNumber)
+    .filter((n) => typeof n === 'number' && n > 0)
+  if (numbers.length > 0) return Math.max(...numbers) + 1
+  return summaries.length + 1
+}
+
+async function createNumberedPodRecord(subject, courseNumber, podNumber, title) {
   const now = new Date().toISOString()
   const id = uuid()
+  const slug = numberedPodSlug(subject, courseNumber, podNumber)
+  const podTitle = title?.trim() || formatPodTitle(subject, courseNumber, podNumber)
 
   try {
     await StudyGroup.create({
       id,
-      slug: courseToSlug(subject, courseNumber),
-      title: buildGroupTitle(subject, courseNumber),
+      slug,
+      title: podTitle,
       subject,
       course_number: courseNumber,
       created_at: now,
     })
   } catch (error) {
     if (error?.code === 11000) {
-      group = await StudyGroup.findOne({ slug: courseToSlug(subject, courseNumber) }).lean()
-      if (group) return group
+      const existing = await StudyGroup.findOne({ slug }).lean()
+      if (existing) return existing
     }
     throw error
   }
@@ -104,33 +184,57 @@ async function findOrCreateGroup(subject, courseNumber) {
   return StudyGroup.findOne({ id }).lean()
 }
 
-/** Extra pod when the primary course group is full. */
-async function createAdditionalGroup(subject, courseNumber) {
-  const now = new Date().toISOString()
-  const id = uuid()
-  const slug = `${courseToSlug(subject, courseNumber)}-${id.slice(0, 8)}`
+/**
+ * Explicit pod create — used by POST /matching/groups.
+ * Never creates a second open pod while seats remain.
+ */
+export async function createCoursePod(user, { course, title, podNumber } = {}) {
+  const { subject, courseNumber } = normalizeCourseInput(course)
+  if (!subject || !courseNumber) {
+    throw validationError('course with subject and courseNumber is required')
+  }
 
-  await StudyGroup.create({
-    id,
-    slug,
-    title: buildGroupTitle(subject, courseNumber),
-    subject,
-    course_number: courseNumber,
-    created_at: now,
-  })
+  await assertNotInCourseGroup(user.id, subject, courseNumber)
+  await ensureUserCourseEnrolled(user.id, subject, courseNumber)
 
-  return StudyGroup.findOne({ id }).lean()
+  const summaries = await listPodSummariesForCourse(subject, courseNumber)
+  const openGroups = summaries.filter((g) => g.openSlots > 0)
+  if (openGroups.length > 0) {
+    throw openPodExists(openGroups)
+  }
+
+  const assignedNumber = nextPodNumber(summaries)
+
+  const group = await createNumberedPodRecord(subject, courseNumber, assignedNumber, title)
+  await addMemberToGroup(group.id, user)
+
+  const summary = await toPodSummary(group)
+  return {
+    ...summary,
+    created: true,
+  }
 }
 
 async function completeMatchingJob({ jobId, user, subject, courseNumber, studyPreferences, io }) {
   const size = studyPreferences.groupSize ?? 'medium'
-  let group = await findBestGroup(subject, courseNumber, size)
+
+  const summaries = await listPodSummariesForCourse(subject, courseNumber)
+  const openGroups = summaries
+    .filter((g) => g.openSlots > 0)
+    .sort((a, b) => b.memberCount - a.memberCount)
+
+  let group
+  if (openGroups.length > 0) {
+    group = await StudyGroup.findOne({
+      $or: [{ slug: openGroups[0].groupId }, { id: openGroups[0].groupId }],
+    }).lean()
+  } else {
+    const n = nextPodNumber(summaries)
+    group = await createNumberedPodRecord(subject, courseNumber, n)
+  }
+
   if (!group) {
-    group = await findOrCreateGroup(subject, courseNumber)
-    const memberCount = await GroupMember.countDocuments({ group_id: group.id })
-    if (memberCount >= groupSizeLimit(size)) {
-      group = await createAdditionalGroup(subject, courseNumber)
-    }
+    throw validationError('Unable to find or create a study pod')
   }
 
   await assertGroupHasSpace(group.id, size)
@@ -248,32 +352,6 @@ async function countOtherEnrolledStudents(subject, courseNumber, userId) {
     course_number: courseNumber.trim(),
     user_id: { $ne: userId },
   })
-}
-
-async function findBestGroup(subject, courseNumber, groupSize) {
-  const limit = groupSizeLimit(groupSize)
-
-  const groups = await StudyGroup.aggregate([
-    { $match: { subject: subject.trim(), course_number: courseNumber.trim() } },
-    {
-      $lookup: {
-        from: 'group_members',
-        localField: 'id',
-        foreignField: 'group_id',
-        as: 'members',
-      },
-    },
-    { $addFields: { member_count: { $size: '$members' } } },
-    { $match: { member_count: { $lt: limit } } },
-    { $sort: { member_count: -1 } },
-    { $limit: 1 },
-  ])
-
-  return groups[0] ?? null
-}
-
-async function createGroup(subject, courseNumber) {
-  return findOrCreateGroup(subject.trim(), courseNumber.trim())
 }
 
 async function addMemberToGroup(groupId, user) {
@@ -484,52 +562,32 @@ export async function listCourseGroups(courseCode) {
     .toLowerCase()
   if (!slug) return []
 
-  const capacity = DEFAULT_POD_CAPACITY
-  const slugPattern = new RegExp(`^${escapeRegex(slug)}(-[a-z0-9]+)?$`, 'i')
-
-  let groups = await StudyGroup.find({
+  // Prefer resolving via an existing pod for this course code
+  const slugPattern = new RegExp(`^${escapeRegex(slug)}(-\\d+)?$`, 'i')
+  const seed = await StudyGroup.findOne({
     $or: [{ slug }, { slug: slugPattern }],
   }).lean()
 
-  // Resolve all pods for the same subject + course number
-  if (groups.length > 0) {
-    const seed = groups[0]
-    groups = await StudyGroup.find({
-      subject: seed.subject,
-      course_number: seed.course_number,
-    })
-      .sort({ created_at: 1 })
-      .lean()
-  } else {
-    // Parse "computer-science-401" → match groups whose courseToSlug equals courseCode
-    const parts = slug.split('-').filter(Boolean)
-    if (parts.length >= 2) {
-      const courseNumber = parts[parts.length - 1]
-      const candidates = await StudyGroup.find({
-        course_number: new RegExp(`^${escapeRegex(courseNumber)}$`, 'i'),
-      }).lean()
-      groups = candidates
-        .filter((g) => courseToSlug(g.subject, g.course_number) === slug)
-        .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))
-    }
+  if (seed) {
+    return listPodSummariesForCourse(seed.subject, seed.course_number)
   }
 
-  return Promise.all(
-    groups.map(async (g) => {
-      const memberCount = await GroupMember.countDocuments({ group_id: g.id })
-      const openSlots = Math.max(0, capacity - memberCount)
+  // Parse "biology-101" / "computer-science-401" → subject + number
+  const parts = slug.split('-').filter(Boolean)
+  if (parts.length < 2) return []
 
-      return {
-        groupId: g.slug,
-        title: g.title,
-        memberCount,
-        maxSize: capacity,
-        openSlots,
-        courseLabel: formatCourseLabel(g.subject, g.course_number),
-        courseCode: courseToSlug(g.subject, g.course_number),
-      }
-    }),
-  )
+  const courseNumber = parts[parts.length - 1]
+  const candidates = await StudyGroup.find({
+    course_number: new RegExp(`^${escapeRegex(courseNumber)}$`, 'i'),
+  }).lean()
+
+  const match = candidates.find((g) => courseBaseSlug(g.subject, g.course_number) === slug)
+  if (match) {
+    return listPodSummariesForCourse(match.subject, match.course_number)
+  }
+
+  // No pods yet — still allow empty list for a well-formed course code
+  return []
 }
 
 export async function usersShareGroup(userIdA, userIdB) {

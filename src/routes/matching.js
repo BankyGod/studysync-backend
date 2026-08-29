@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { authRequired, requireRole } from '../middleware/auth.js'
 import { notFound, validationError } from '../utils/errors.js'
 import {
+  createCoursePod,
   getMatchingJob,
   joinGroup,
   leaveGroup,
@@ -30,6 +31,8 @@ function normalizeFindGroupBody(body = {}) {
       subject: subject != null ? String(subject).trim() : '',
       courseNumber: courseNumber != null ? String(courseNumber).trim() : '',
     },
+    title: body.title,
+    podNumber: body.podNumber != null ? Number(body.podNumber) : undefined,
   }
 }
 
@@ -53,6 +56,25 @@ router.post('/find-group', async (req, res, next) => {
     }
 
     res.status(202).json(result)
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.post('/groups', async (req, res, next) => {
+  try {
+    const payload = normalizeFindGroupBody(req.body ?? {})
+    if (!payload.course.subject || !payload.course.courseNumber) {
+      throw validationError('course with subject and courseNumber is required')
+    }
+
+    const created = await createCoursePod(req.user, {
+      course: payload.course,
+      title: payload.title,
+      podNumber: payload.podNumber,
+    })
+
+    res.status(201).json(created)
   } catch (error) {
     next(error)
   }

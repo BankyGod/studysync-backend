@@ -31,6 +31,10 @@ export function alreadyInGroup(message = 'You are already in a study group for t
   return new AppError(409, 'ALREADY_IN_GROUP', message)
 }
 
+export function openPodExists(openGroups = [], message = 'An open pod already exists for this course. Join it instead of creating another.') {
+  return new AppError(409, 'OPEN_POD_EXISTS', message, { openGroups })
+}
+
 export function moveBackApprovalRequired(message, details = null) {
   return new AppError(409, 'MOVE_BACK_APPROVAL_REQUIRED', message, details)
 }
