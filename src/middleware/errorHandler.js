@@ -12,6 +12,16 @@ export function errorHandler(err, req, res, next) {
     })
     return
   }
+  if (err.name === 'MulterError' && err.code === 'LIMIT_UNEXPECTED_FILE') {
+    res.status(400).json({
+      error: {
+        code: 'LIMIT_UNEXPECTED_FILE',
+        message: `Unexpected field '${err.field || 'unknown'}'`,
+        field: err.field || null,
+      },
+    })
+    return
+  }
   if (err?.message?.includes('Profile photo must be')) {
     res.status(400).json({
       error: { code: 'VALIDATION_ERROR', message: err.message },

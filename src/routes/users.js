@@ -42,6 +42,8 @@ function avatarDiskPath(userId, originalName, mimetype) {
   return path.join(dir, `${uuid()}${avatarExtension(originalName, mimetype)}`)
 }
 
+const AVATAR_FORM_FIELDS = ['file', 'image', 'photo', 'avatar', 'profilePhoto', 'picture']
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_AVATAR_SIZE },
@@ -55,12 +57,17 @@ const upload = multer({
 })
 
 function parseAvatarUpload(req, res, next) {
-  upload.single('photo')(req, res, (err) => {
-    if (req.file || err) {
-      if (err) return next(err)
-      return next()
+  upload.fields(AVATAR_FORM_FIELDS.map((name) => ({ name, maxCount: 1 })))(req, res, (err) => {
+    if (err) return next(err)
+
+    for (const name of AVATAR_FORM_FIELDS) {
+      const match = req.files?.[name]?.[0]
+      if (match) {
+        req.file = match
+        break
+      }
     }
-    upload.single('avatar')(req, res, next)
+    next()
   })
 }
 
@@ -228,26 +235,36 @@ router.put('/me/profile', async (req, res, next) => {
 
 router.post('/me/avatar', parseAvatarUpload, async (req, res, next) => {
   try {
-    if (!req.file) {
-      throw validationError('photo file is required (multipart field: photo or avatar)')
+    if (!req.file?.buffer?.length) {
+      throw validationError(
+        `photo file is required (multipart field: ${AVATAR_FORM_FIELDS.join(', ')})`,
+      )
     }
 
     const profile = await ensureUserProfile(req.user)
     const mimeType = normalizeAvatarMimeType(req.file.mimetype)
-    const diskPath = avatarDiskPath(req.user.id, req.file.originalname, mimeType)
     const now = new Date().toISOString()
+    const bytes = Buffer.from(req.file.buffer)
 
-    if (profile.avatar_storage_key && fs.existsSync(profile.avatar_storage_key)) {
-      fs.unlinkSync(profile.avatar_storage_key)
+    // Disk cache is optional (Render filesystem is ephemeral / may be read-only).
+    // Mongo avatar_data is the source of truth for signed URL delivery.
+    let diskPath = null
+    try {
+      if (profile.avatar_storage_key && fs.existsSync(profile.avatar_storage_key)) {
+        fs.unlinkSync(profile.avatar_storage_key)
+      }
+      diskPath = avatarDiskPath(req.user.id, req.file.originalname, mimeType)
+      fs.writeFileSync(diskPath, bytes)
+    } catch (diskError) {
+      console.warn('Avatar disk cache skipped:', diskError.message)
+      diskPath = null
     }
-
-    fs.writeFileSync(diskPath, req.file.buffer)
 
     await UserProfile.updateOne(
       { user_id: req.user.id },
       {
-        avatar_data: req.file.buffer,
-        avatar_byte_length: req.file.buffer.length,
+        avatar_data: bytes,
+        avatar_byte_length: bytes.length,
         avatar_storage_key: diskPath,
         avatar_mime_type: mimeType,
         updated_at: now,
