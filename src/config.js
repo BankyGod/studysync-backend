@@ -54,7 +54,13 @@ export const config = {
     .filter(Boolean),
   mongoUri,
   uploadsDir: path.resolve(backendRoot, process.env.UPLOADS_DIR || './uploads'),
-  publicApiUrl: (process.env.PUBLIC_API_URL || '').trim().replace(/\/$/, ''),
+  publicApiUrl: (
+    process.env.PUBLIC_API_URL ||
+    process.env.RENDER_EXTERNAL_URL ||
+    ''
+  )
+    .trim()
+    .replace(/\/$/, ''),
   jitsiDomain: (process.env.JITSI_DOMAIN || 'meet.jit.si').trim().replace(/^https?:\/\//, '').replace(/\/$/, ''),
   livekitUrl: (process.env.LIVEKIT_URL || process.env.LIVEKIT_WS_URL || '').trim().replace(/\/$/, ''),
 }

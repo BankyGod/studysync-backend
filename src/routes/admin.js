@@ -349,7 +349,7 @@ router.get('/groups', async (req, res, next) => {
             joinedAt: m.joined_at,
             reliability,
             atRisk,
-            ...(avatarUrl ? { avatarUrl } : {}),
+            avatarUrl,
           }
         })
 
@@ -446,7 +446,7 @@ router.get('/groups/:groupId', async (req, res, next) => {
         initials: m.initials,
         reliability,
         atRisk: reliability.score !== null && reliability.score < 60,
-        ...(avatarUrl ? { avatarUrl } : {}),
+        avatarUrl,
       }
     })
 
@@ -571,7 +571,7 @@ router.get('/students', async (req, res, next) => {
         matched: userGroups.length > 0,
         groups: userGroups,
         createdAt: s.created_at,
-        ...(avatarUrl ? { avatarUrl } : {}),
+        avatarUrl,
       }
     })
 
@@ -618,7 +618,7 @@ router.get('/students/:userId', async (req, res, next) => {
       level: user.level,
       university: user.university,
       createdAt: user.created_at,
-      ...(avatarUrl ? { avatarUrl } : {}),
+      avatarUrl,
       profile: profile
         ? {
             fullName: profile.full_name,
@@ -626,7 +626,7 @@ router.get('/students/:userId', async (req, res, next) => {
             primaryUniversity: profile.primary_university,
             secondaryUniversity: profile.secondary_university ?? '',
             location: profile.location,
-            ...(avatarUrl ? { avatarUrl } : {}),
+            avatarUrl,
           }
         : null,
       onboarding: onboarding

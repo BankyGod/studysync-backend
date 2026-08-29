@@ -4,7 +4,7 @@ import { v4 as uuid } from 'uuid'
 import { User, UserProfile } from '../db/models.js'
 import { authRequired, signToken } from '../middleware/auth.js'
 import { conflict, validationError, unauthorized } from '../utils/errors.js'
-import { formatUserWithAvatar } from '../utils/profileAvatar.js'
+import { formatUserWithAvatar, requestAbsoluteBase } from '../utils/profileAvatar.js'
 
 const router = Router()
 
@@ -96,7 +96,10 @@ router.post('/register', async (req, res, next) => {
     const user = await User.findOne({ id: userId }).lean()
     const token = signToken(userId)
 
-    res.status(201).json({ token, user: await formatUserWithAvatar(user) })
+    res.status(201).json({
+      token,
+      user: await formatUserWithAvatar(user, { absoluteBase: requestAbsoluteBase(req) }),
+    })
   } catch (error) {
     next(error)
   }
@@ -115,7 +118,10 @@ router.post('/login', async (req, res, next) => {
     }
 
     const token = signToken(user.id)
-    res.json({ token, user: await formatUserWithAvatar(user) })
+    res.json({
+      token,
+      user: await formatUserWithAvatar(user, { absoluteBase: requestAbsoluteBase(req) }),
+    })
   } catch (error) {
     next(error)
   }
@@ -138,14 +144,17 @@ router.post('/admin/login', async (req, res, next) => {
     }
 
     const token = signToken(user.id)
-    res.json({ token, user: await formatUserWithAvatar(user) })
+    res.json({
+      token,
+      user: await formatUserWithAvatar(user, { absoluteBase: requestAbsoluteBase(req) }),
+    })
   } catch (error) {
     next(error)
   }
 })
 
 router.get('/me', authRequired, async (req, res) => {
-  res.json(await formatUserWithAvatar(req.user))
+  res.json(await formatUserWithAvatar(req.user, { absoluteBase: requestAbsoluteBase(req) }))
 })
 
 router.get('/admin/me', authRequired, async (req, res, next) => {
@@ -153,7 +162,7 @@ router.get('/admin/me', authRequired, async (req, res, next) => {
     if (!['admin', 'instructor'].includes(req.user.role)) {
       throw unauthorized('Admin portal access requires an admin or instructor account')
     }
-    res.json(await formatUserWithAvatar(req.user))
+    res.json(await formatUserWithAvatar(req.user, { absoluteBase: requestAbsoluteBase(req) }))
   } catch (error) {
     next(error)
   }

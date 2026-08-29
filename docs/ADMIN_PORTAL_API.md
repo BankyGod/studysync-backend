@@ -224,9 +224,10 @@ Members include `avatarUrl` when a photo exists.
 
 ### Profile photos (students)
 
-- Upload: `POST /api/users/me/avatar` (multipart field `photo` or `avatar`) — stored in DB + disk cache  
-- Delete: `DELETE /api/users/me/avatar`  
-- Image: `GET /api/users/:userId/avatar?exp=&sig=` (signed) or with Bearer as admin/instructor / same pod  
+- Upload: `POST /api/users/me/avatar` (multipart field `photo` or `avatar`) — stored in DB + disk cache; response `{ avatarUrl, updatedAt }` with absolute URL when possible
+- Delete: `DELETE /api/users/me/avatar` → `{ avatarUrl: null, updatedAt }`
+- Image: `GET /api/users/:userId/avatar?exp=&sig=` (signed, no JWT; public cache + cross-origin) or with Bearer as admin/instructor / same pod
+- Set `PUBLIC_API_URL` to the API HTTPS origin so `avatarUrl` is never a relative path on a separate frontend host
 
 ---
 

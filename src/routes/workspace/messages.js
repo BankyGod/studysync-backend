@@ -4,11 +4,12 @@ import { Router } from 'express'
 import multer from 'multer'
 import mongoose from 'mongoose'
 import { v4 as uuid } from 'uuid'
-import { Message, StoredFile, VideoCall } from '../../db/models.js'
+import { Message, StoredFile, VideoCall, UserProfile } from '../../db/models.js'
 import { config } from '../../config.js'
 import { authRequired, requireGroupMember } from '../../middleware/auth.js'
 import { createUploadRateLimiter } from '../../middleware/uploadRateLimit.js'
 import { forbidden, notFound, validationError } from '../../utils/errors.js'
+import { avatarUrlForUser, requestAbsoluteBase } from '../../utils/profileAvatar.js'
 import {
   MAX_VOICE_DURATION_SEC,
   buildSharedStoragePath,
@@ -126,6 +127,7 @@ function formatMessage(row, groupSlug) {
     type: row.type,
     content: row.content,
     sentAt: row.sent_at,
+    avatarUrl: row.avatarUrl ?? null,
   }
 
   if (row.type === 'attachment' && row.file_id) {
@@ -219,6 +221,28 @@ async function enrichMessageRows(messages) {
   })
 }
 
+async function attachSenderAvatars(rows, absoluteBase) {
+  const senderIds = [...new Set(rows.map((row) => row.sender_id).filter(Boolean))]
+  if (!senderIds.length) return rows
+
+  const profiles = await UserProfile.find({ user_id: { $in: senderIds } })
+    .select('user_id avatar_mime_type avatar_storage_key avatar_byte_length')
+    .lean()
+  const profileByUserId = Object.fromEntries(profiles.map((p) => [p.user_id, p]))
+
+  return rows.map((row) => ({
+    ...row,
+    avatarUrl: avatarUrlForUser(row.sender_id, profileByUserId[row.sender_id], {
+      absoluteBase,
+    }),
+  }))
+}
+
+async function formatMessageWithAvatar(row, groupSlug, req) {
+  const [withAvatar] = await attachSenderAvatars([row], requestAbsoluteBase(req))
+  return formatMessage(withAvatar, groupSlug)
+}
+
 async function fetchMessageRow(messageId) {
   const message = await Message.findOne({ id: messageId }).lean()
   if (!message) return null
@@ -235,7 +259,10 @@ router.get('/', async (req, res, next) => {
       .limit(limit)
       .lean()
 
-    const rows = await enrichMessageRows(messages)
+    const rows = await attachSenderAvatars(
+      await enrichMessageRows(messages),
+      requestAbsoluteBase(req),
+    )
     res.json({ messages: rows.map((row) => formatMessage(row, req.group.slug)) })
   } catch (error) {
     next(error)
@@ -329,7 +356,7 @@ router.post('/', uploadRateLimit, parseMessageUpload, async (req, res, next) => 
       )
 
       const row = await fetchMessageRow(messageId)
-      const message = formatMessage(row, req.group.slug)
+      const message = await formatMessageWithAvatar(row, req.group.slug, req)
       const io = req.app.get('io')
       io?.to(`workspace:${req.group.slug}`).emit('message:new', { groupId: req.group.slug, message })
       io?.to(`workspace:${req.group.slug}`).emit('file:new', { groupId: req.group.slug, file: fileEntry })
@@ -366,7 +393,7 @@ router.post('/', uploadRateLimit, parseMessageUpload, async (req, res, next) => 
     }
 
     const row = await fetchMessageRow(messageId)
-    const message = formatMessage(row, req.group.slug)
+    const message = await formatMessageWithAvatar(row, req.group.slug, req)
     const io = req.app.get('io')
     io?.to(`workspace:${req.group.slug}`).emit('message:new', { groupId: req.group.slug, message })
 

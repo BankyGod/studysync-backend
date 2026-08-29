@@ -18,6 +18,7 @@ import {
   loadAvatarProfile,
   normalizeAvatarMimeType,
   readAvatarBytes,
+  requestAbsoluteBase,
   verifyAvatarSig,
 } from '../utils/profileAvatar.js'
 import notificationsRouter from './notifications.js'
@@ -109,8 +110,11 @@ router.get('/:userId/avatar', async (req, res, next) => {
       throw notFound('Profile photo not found')
     }
 
+    // Signed URLs are meant for <img src> — allow cross-origin display without JWT
     res.setHeader('Content-Type', profile.avatar_mime_type || 'image/jpeg')
-    res.setHeader('Cache-Control', 'private, max-age=3600')
+    res.setHeader('Cache-Control', 'public, max-age=3600')
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+    res.setHeader('Access-Control-Allow-Origin', '*')
     res.send(bytes)
   } catch (error) {
     next(error)
@@ -177,7 +181,12 @@ async function assertCanViewUserReliability(viewerId, targetUserId, groupIdOrSlu
 router.get('/me/profile', async (req, res, next) => {
   try {
     const profile = await loadProfileOrFail(req.user.id)
-    res.json(formatProfileResponse(profile, req.user, { includeEmail: true }))
+    res.json(
+      formatProfileResponse(profile, req.user, {
+        includeEmail: true,
+        absoluteBase: requestAbsoluteBase(req),
+      }),
+    )
   } catch (error) {
     next(error)
   }
@@ -206,7 +215,12 @@ router.put('/me/profile', async (req, res, next) => {
     )
 
     const profile = await loadProfileOrFail(req.user.id)
-    res.json(formatProfileResponse(profile, req.user, { includeEmail: true }))
+    res.json(
+      formatProfileResponse(profile, req.user, {
+        includeEmail: true,
+        absoluteBase: requestAbsoluteBase(req),
+      }),
+    )
   } catch (error) {
     next(error)
   }
@@ -241,8 +255,15 @@ router.post('/me/avatar', parseAvatarUpload, async (req, res, next) => {
     )
 
     const updated = await loadAvatarProfile(req.user.id)
+    const avatarUrl = avatarUrlForUser(req.user.id, updated, {
+      absoluteBase: requestAbsoluteBase(req),
+    })
+    if (!avatarUrl) {
+      throw validationError('Avatar was saved but URL could not be built')
+    }
+
     res.json({
-      avatarUrl: avatarUrlForUser(req.user.id, updated),
+      avatarUrl,
       updatedAt: now,
     })
   } catch (error) {
@@ -270,7 +291,7 @@ router.delete('/me/avatar', async (req, res, next) => {
       },
     )
 
-    res.status(204).send()
+    res.json({ avatarUrl: null, updatedAt: now })
   } catch (error) {
     next(error)
   }
@@ -312,17 +333,15 @@ router.get('/me/groups', async (req, res, next) => {
         const formattedMembers = members.map((m) => {
           const u = userById[m.user_id]
           const memberProfile = profileByUserId[m.user_id]
-          const formatted = formatMember({
+          return formatMember({
             user_id: m.user_id,
             initials: m.initials,
             avatar_color: m.avatar_color,
             first_name: u?.first_name,
             last_name: u?.last_name,
             program: u?.program,
+            avatarUrl: avatarUrlForUser(m.user_id, memberProfile),
           })
-          const avatarUrl = avatarUrlForUser(m.user_id, memberProfile)
-          if (avatarUrl) formatted.avatarUrl = avatarUrl
-          return formatted
         })
 
         const taskStats = await Task.aggregate([
@@ -395,7 +414,10 @@ router.get('/:userId/profile', async (req, res, next) => {
       if (!profile) {
         throw notFound('Profile not found')
       }
-      const body = formatProfileResponse(profile, req.user, { includeEmail: true })
+      const body = formatProfileResponse(profile, req.user, {
+        includeEmail: true,
+        absoluteBase: requestAbsoluteBase(req),
+      })
       const reliability = await computeUserReliability(userId, req.query.groupId?.trim() || null)
       body.reliability = formatReliability(reliability)
       return res.json(body)
@@ -416,7 +438,9 @@ router.get('/:userId/profile', async (req, res, next) => {
       throw notFound('Profile not found')
     }
 
-    const body = formatProfileResponse(profile, targetUser)
+    const body = formatProfileResponse(profile, targetUser, {
+      absoluteBase: requestAbsoluteBase(req),
+    })
     if (!body.studentRole) body.studentRole = targetUser.program
     if (!body.primaryUniversity) body.primaryUniversity = targetUser.university
 

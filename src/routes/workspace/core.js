@@ -33,9 +33,8 @@ router.get('/', async (req, res, next) => {
         first_name: u?.first_name,
         last_name: u?.last_name,
         program: u?.program,
+        avatarUrl: avatarUrlForUser(m.user_id, profileByUserId[m.user_id]),
       })
-      const avatarUrl = avatarUrlForUser(m.user_id, profileByUserId[m.user_id])
-      if (avatarUrl) member.avatarUrl = avatarUrl
       member.reliability = formatReliability(reliabilityByUser[m.user_id])
       return member
     })

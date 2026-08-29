@@ -6,6 +6,7 @@ import {
   MatchingJob,
   User,
   UserCourse,
+  UserProfile,
 } from '../db/models.js'
 import {
   courseToSlug,
@@ -24,6 +25,8 @@ import {
   validationError,
 } from '../utils/errors.js'
 import { computeReliabilityBatch, formatReliability } from './reliabilityService.js'
+import { formatMember } from '../utils/serializers.js'
+import { avatarUrlForUser } from '../utils/profileAvatar.js'
 
 const MATCHING_STEPS = ['course', 'preferences', 'compatibility', 'searching', 'finalizing']
 const STEP_PROGRESS = [20, 40, 65, 85, 100]
@@ -282,7 +285,11 @@ async function failMatchingJob(jobId, userId, error, io) {
 export async function getGroupMembers(groupId) {
   const members = await GroupMember.find({ group_id: groupId }).lean()
   const users = await User.find({ id: { $in: members.map((m) => m.user_id) } }).lean()
+  const profiles = await UserProfile.find({ user_id: { $in: members.map((m) => m.user_id) } })
+    .select('user_id avatar_mime_type avatar_storage_key avatar_byte_length')
+    .lean()
   const userById = Object.fromEntries(users.map((u) => [u.id, u]))
+  const profileByUserId = Object.fromEntries(profiles.map((p) => [p.user_id, p]))
 
   return members.map((m) => {
     const u = userById[m.user_id]
@@ -293,6 +300,7 @@ export async function getGroupMembers(groupId) {
       first_name: u?.first_name,
       last_name: u?.last_name,
       program: u?.program,
+      avatarUrl: avatarUrlForUser(m.user_id, profileByUserId[m.user_id]),
     }
   })
 }
@@ -302,14 +310,19 @@ export async function buildMatchPayload(group, userId) {
   const memberIds = memberRows.map((m) => m.user_id)
   const reliabilityByUser = await computeReliabilityBatch(memberIds, group.id, group.slug)
 
-  const members = memberRows.map((m) => ({
-    id: m.user_id,
-    name: `${m.first_name} ${m.last_name}`.trim(),
-    major: m.program,
-    initials: m.initials,
-    color: m.avatar_color,
-    reliability: formatReliability(reliabilityByUser[m.user_id]),
-  }))
+  const members = memberRows.map((m) => {
+    const member = formatMember({
+      user_id: m.user_id,
+      initials: m.initials,
+      avatar_color: m.avatar_color,
+      first_name: m.first_name,
+      last_name: m.last_name,
+      program: m.program,
+      avatarUrl: m.avatarUrl,
+    })
+    member.reliability = formatReliability(reliabilityByUser[m.user_id])
+    return member
+  })
 
   const metrics = await computeMatchMetrics(userId, group.id, null)
 

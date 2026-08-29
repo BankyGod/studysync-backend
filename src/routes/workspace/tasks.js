@@ -6,6 +6,7 @@ import { fetchTaskRows } from '../../db/taskQueries.js'
 import { authRequired, requireGroupMember } from '../../middleware/auth.js'
 import { notFound, validationError, forbidden, conflict, regressRequiresApproval } from '../../utils/errors.js'
 import { pickAvatarColor } from '../../utils/helpers.js'
+import { normalizeAvatarColor } from '../../utils/profileAvatar.js'
 import {
   buildProgressUpdates,
   buildStatusUpdates,
@@ -49,7 +50,7 @@ function formatTask(row) {
               .slice(0, 2) || '??'
           : '??'),
       name: row.creator_name || 'Unknown',
-      color: row.creator_color ?? pickAvatarColor(row.creator_id),
+      color: normalizeAvatarColor(row.creator_color ?? pickAvatarColor(row.creator_id), row.creator_id),
     }
   }
   if (row.assignee_id) {
@@ -57,7 +58,7 @@ function formatTask(row) {
       id: row.assignee_id,
       initials: row.initials,
       name: row.assignee_name,
-      color: row.avatar_color,
+      color: normalizeAvatarColor(row.avatar_color, row.assignee_id),
     }
   }
   const pending = row.pending_regress_request
