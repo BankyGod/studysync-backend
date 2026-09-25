@@ -2,12 +2,19 @@ import { Router } from 'express'
 import { v4 as uuid } from 'uuid'
 import { ScheduledSession, GroupMember } from '../../db/models.js'
 import { authRequired, requireGroupMember } from '../../middleware/auth.js'
-import { notFound, validationError } from '../../utils/errors.js'
+import { forbidden, notFound, validationError } from '../../utils/errors.js'
+import { isGroupLeader } from '../../services/groupLeaderService.js'
 
 const router = Router({ mergeParams: true })
 const MEETING_TYPES = ['Online Meeting', 'In Person', 'Hybrid']
 
 router.use(authRequired, requireGroupMember)
+
+async function assertSessionLeader(req) {
+  if (!(await isGroupLeader(req.group.id, req.user.id))) {
+    throw forbidden('Only the group leader can manage scheduled sessions')
+  }
+}
 
 function formatSession(row, memberCount) {
   return {
@@ -39,6 +46,7 @@ router.get('/', async (req, res, next) => {
 
 router.post('/', async (req, res, next) => {
   try {
+    await assertSessionLeader(req)
     const { title, date, startTime, endTime, meetingType, agenda } = req.body ?? {}
 
     if (!title?.trim() || !date || !startTime || !endTime || !meetingType) {
@@ -84,6 +92,7 @@ router.post('/', async (req, res, next) => {
 
 router.patch('/:sessionId', async (req, res, next) => {
   try {
+    await assertSessionLeader(req)
     const existing = await ScheduledSession.findOne({
       id: req.params.sessionId,
       group_id: req.group.id,
@@ -122,6 +131,7 @@ router.patch('/:sessionId', async (req, res, next) => {
 
 router.delete('/:sessionId', async (req, res, next) => {
   try {
+    await assertSessionLeader(req)
     const result = await ScheduledSession.deleteOne({
       id: req.params.sessionId,
       group_id: req.group.id,

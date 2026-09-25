@@ -94,25 +94,19 @@ function canEditTaskMetadata(task, userId, isLeader = false) {
   return Boolean(task.creator_id) && task.creator_id === userId
 }
 
-function canApproveRegress(task, userId, isLeader = false) {
-  if (isLeader) return true
-  return Boolean(task.creator_id) && task.creator_id === userId
-}
-
 async function callerIsGroupLeader(req) {
   return isGroupLeader(req.group.id, req.user.id)
 }
 
-function assertForwardOrCreatorMove(existing, nextStatus, userId, isLeader = false) {
+/** Only the group leader may move a task backward without approval. */
+function assertForwardOrLeaderMove(existing, nextStatus, isLeader = false) {
   if (!isBackwardStatusMove(existing.status, nextStatus)) return
   if (isLeader) return
-  if (existing.creator_id && existing.creator_id !== userId) {
-    throw regressRequiresApproval('Moving this task backward requires approval from the task creator.', {
-      taskId: existing.id,
-      fromStatus: existing.status,
-      targetStatus: nextStatus,
-    })
-  }
+  throw regressRequiresApproval('Moving this task backward requires approval from the group leader.', {
+    taskId: existing.id,
+    fromStatus: existing.status,
+    targetStatus: nextStatus,
+  })
 }
 
 async function applyTaskUpdate(req, taskId, updates, existing, { notifyProgress, notifyCompleted } = {}) {
@@ -220,7 +214,7 @@ router.put('/reorder', async (req, res, next) => {
         throw notFound(`Task not found: ${item.id}`)
       }
       if (item.status && item.status !== existing.status) {
-        assertForwardOrCreatorMove(existing, item.status, req.user.id, isLeader)
+        assertForwardOrLeaderMove(existing, item.status, isLeader)
       }
     }
 
@@ -369,8 +363,8 @@ router.post('/:taskId/regress-requests', async (req, res, next) => {
       throw validationError('Regress requests are only needed when moving a task to an earlier column')
     }
 
-    if (existing.creator_id === req.user.id || (await callerIsGroupLeader(req))) {
-      throw validationError('Task creators and leaders can move tasks backward directly')
+    if (await callerIsGroupLeader(req)) {
+      throw validationError('Group leaders can move tasks backward directly')
     }
 
     const result = await createRegressRequest(req, existing, targetStatus)
@@ -386,8 +380,8 @@ router.post('/:taskId/regress-requests/:requestId/approve', async (req, res, nex
     if (!existing) {
       throw notFound('Task not found')
     }
-    if (!canApproveRegress(existing, req.user.id, await callerIsGroupLeader(req))) {
-      throw forbidden('Only the task creator or group leader can approve regress requests')
+    if (!(await callerIsGroupLeader(req))) {
+      throw forbidden('Only the group leader can approve regress requests')
     }
 
     const regressRequest = await TaskRegressRequest.findOne({
@@ -442,8 +436,8 @@ router.post('/:taskId/regress-requests/:requestId/reject', async (req, res, next
     if (!existing) {
       throw notFound('Task not found')
     }
-    if (!canApproveRegress(existing, req.user.id, await callerIsGroupLeader(req))) {
-      throw forbidden('Only the task creator or group leader can reject regress requests')
+    if (!(await callerIsGroupLeader(req))) {
+      throw forbidden('Only the group leader can reject regress requests')
     }
 
     const regressRequest = await TaskRegressRequest.findOne({
@@ -513,7 +507,7 @@ router.patch('/:taskId', async (req, res, next) => {
     }
 
     if (status !== undefined) {
-      assertForwardOrCreatorMove(existing, status, req.user.id, isLeader)
+      assertForwardOrLeaderMove(existing, status, isLeader)
       const nextVariant =
         variant ??
         (status === 'completed' ? 'completed' : existing.variant === 'completed' ? 'default' : existing.variant)

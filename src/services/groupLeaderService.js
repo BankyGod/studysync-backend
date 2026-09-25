@@ -82,6 +82,28 @@ export async function resolveGroupByIdOrSlug(groupIdOrSlug) {
   return group
 }
 
+export async function removeGroupMember(groupId, targetUserId, { actorId } = {}) {
+  if (!targetUserId?.trim()) {
+    throw validationError('userId is required')
+  }
+
+  if (actorId && targetUserId === actorId) {
+    throw validationError('Leaders cannot remove themselves. Transfer leadership first, or leave the group.')
+  }
+
+  const target = await GroupMember.findOne({ group_id: groupId, user_id: targetUserId }).lean()
+  if (!target) {
+    throw notFound('Member not found in this group')
+  }
+
+  if (normalizeMemberRole(target.role) === 'leader') {
+    throw validationError('Cannot remove the group leader. Transfer leadership first.')
+  }
+
+  await GroupMember.deleteOne({ group_id: groupId, user_id: targetUserId })
+  return true
+}
+
 /** Workspace transfer: caller must be current leader. */
 export async function assertCallerIsLeader(groupId, callerId) {
   const ok = await isGroupLeader(groupId, callerId)

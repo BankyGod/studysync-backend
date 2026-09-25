@@ -224,6 +224,11 @@ Members include `avatarUrl`, `role` (`member`|`leader`), `isLeader`.
 
 **Assign leader** → `PUT` or `PATCH /admin/groups/:groupId/leader` `{ "userId" }` (permission: `assign_leaders`)
 
+**Workspace leader** → `PUT`/`PATCH /workspaces/:groupId/leader`  
+**Remove member** → `DELETE /workspaces/:groupId/members/:userId` (leader only)
+
+**Leader enforcement:** regress approve/reject, session write, call end → leader only. Task edit/delete/reassign → leader (any) or creator (own). Sessions GET + call leave → any member.
+
 **Reports bundle** → `GET /admin/reports`  
 **Task progress** → `GET /admin/task-progress` `{ summary, items[] }`
 

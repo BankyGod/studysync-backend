@@ -4,6 +4,7 @@ import {
   getGroupMemberUserIds,
   getUserDisplayName,
 } from './notificationService.js'
+import { getGroupLeaderId } from './groupLeaderService.js'
 
 function statusLabel(status) {
   if (status === 'in_progress') return 'In Progress'
@@ -91,11 +92,13 @@ export async function notifyTaskStatusCompleted(io, { group, task, actorId, crea
 }
 
 export async function notifyRegressRequested(io, { group, task, requesterId, creatorId, fromStatus, targetStatus }) {
-  if (!creatorId || creatorId === requesterId) return
+  const leaderId = await getGroupLeaderId(group.id)
+  const recipientId = leaderId || creatorId
+  if (!recipientId || recipientId === requesterId) return
 
   const requesterName = await getUserDisplayName(requesterId)
   await createNotification(io, {
-    userId: creatorId,
+    userId: recipientId,
     type: 'task_regress_requested',
     title: 'Move-back approval needed',
     message: `${requesterName} wants to move "${task.title}" from ${statusLabel(fromStatus)} back to ${statusLabel(targetStatus)}.`,

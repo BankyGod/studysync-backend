@@ -10,6 +10,7 @@ import {
   assertCallerIsLeader,
   formatLeaderTransferResponse,
   leaderIdFromMembers,
+  removeGroupMember,
   setGroupLeader,
 } from '../../services/groupLeaderService.js'
 import { userHasPermission, PERMISSIONS } from '../../services/staffPermissions.js'
@@ -82,5 +83,23 @@ async function transferLeadership(req, res, next) {
 
 router.put('/leader', transferLeadership)
 router.patch('/leader', transferLeadership)
+
+/** Leader removes a member from the pod. */
+router.delete('/members/:userId', async (req, res, next) => {
+  try {
+    await assertCallerIsLeader(req.group.id, req.user.id)
+    await removeGroupMember(req.group.id, req.params.userId, { actorId: req.user.id })
+
+    const io = req.app.get('io')
+    io?.to(`workspace:${req.group.slug}`).emit('member:removed', {
+      groupId: req.group.slug,
+      userId: req.params.userId,
+    })
+
+    res.status(204).send()
+  } catch (error) {
+    next(error)
+  }
+})
 
 export default router

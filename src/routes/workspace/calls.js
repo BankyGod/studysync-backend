@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { authRequired, requireGroupMember } from '../../middleware/auth.js'
-import { notFound } from '../../utils/errors.js'
+import { forbidden, notFound } from '../../utils/errors.js'
 import {
   endVideoCall,
   formatVideoCall,
@@ -10,6 +10,7 @@ import {
   startVideoCall,
 } from '../../services/videoCallService.js'
 import { VideoCall } from '../../db/models.js'
+import { isGroupLeader } from '../../services/groupLeaderService.js'
 
 const router = Router({ mergeParams: true })
 
@@ -101,6 +102,9 @@ router.post('/:callId/leave', async (req, res, next) => {
 
 router.post('/:callId/end', async (req, res, next) => {
   try {
+    if (!(await isGroupLeader(req.group.id, req.user.id))) {
+      throw forbidden('Only the group leader can end the call for everyone')
+    }
     const io = req.app.get('io')
     const call = await endVideoCall({
       group: req.group,
