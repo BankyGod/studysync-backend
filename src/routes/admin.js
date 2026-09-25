@@ -13,7 +13,7 @@ import {
   StoredFile,
   OnboardingProfile,
 } from '../db/models.js'
-import { authRequired, requireRole } from '../middleware/auth.js'
+import { authRequired, requireRole, requireStaffPermission } from '../middleware/auth.js'
 import { conflict, forbidden, notFound, validationError } from '../utils/errors.js'
 import { computeReliabilityBatch, computeUserReliability, formatReliability } from '../services/reliabilityService.js'
 import { avatarUrlForUser } from '../utils/profileAvatar.js'
@@ -25,20 +25,36 @@ import {
   getCoursesReport,
   getActivityReport,
 } from '../services/adminReportService.js'
+import { getTaskProgressReport, computeGroupProgress } from '../services/groupProgressService.js'
+import {
+  formatLeaderTransferResponse,
+  leaderIdFromMembers,
+  normalizeMemberRole,
+  resolveGroupByIdOrSlug,
+  setGroupLeader,
+} from '../services/groupLeaderService.js'
+import {
+  mapStaffRoleToAccount,
+  PERMISSIONS,
+  resolveStaffRole,
+} from '../services/staffPermissions.js'
 
 const router = Router()
 
 router.use(authRequired, requireRole('admin', 'instructor'))
 
 function requireAdminOnly(req, res, next) {
-  if (req.user.role !== 'admin') {
+  if (req.user.role !== 'admin' && resolveStaffRole(req.user) !== 'super_admin') {
     next(forbidden('Only admins can perform this action'))
     return
   }
   next()
 }
 
-router.get('/dashboard', async (req, res, next) => {
+router.get(
+  '/dashboard',
+  requireStaffPermission(PERMISSIONS.VIEW_REPORTS, PERMISSIONS.MANAGE_GROUPS),
+  async (req, res, next) => {
   try {
     const [overview, engagement, activity] = await Promise.all([
       getOverviewReport(),
@@ -65,7 +81,53 @@ router.get('/dashboard', async (req, res, next) => {
   }
 })
 
-router.get('/reports/overview', async (req, res, next) => {
+router.get('/reports', requireStaffPermission(PERMISSIONS.VIEW_REPORTS), async (req, res, next) => {
+  try {
+    const [overview, engagement, pods, reliability, courses, activity, taskProgress] =
+      await Promise.all([
+        getOverviewReport(),
+        getEngagementReport(),
+        getPodsReport(),
+        getReliabilityReport(),
+        getCoursesReport(),
+        getActivityReport({ days: 30 }),
+        getTaskProgressReport(),
+      ])
+
+    res.json({
+      generatedAt: new Date().toISOString(),
+      summary: {
+        students: overview.students,
+        pods: overview.pods,
+        cohorts: overview.cohorts,
+        matched: overview.matched,
+        podsWithoutLeader: taskProgress.summary.podsWithoutLeader,
+        avgProgress: taskProgress.summary.avgProgress,
+      },
+      cohorts: [],
+      groups: pods.pods ?? [],
+      students: [],
+      taskProgress: taskProgress.items,
+      overview,
+      engagement,
+      reliability,
+      courses,
+      activity,
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.get('/task-progress', requireStaffPermission(PERMISSIONS.VIEW_TASK_PROGRESS), async (req, res, next) => {
+  try {
+    res.json(await getTaskProgressReport())
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.get('/reports/overview', requireStaffPermission(PERMISSIONS.VIEW_REPORTS), async (req, res, next) => {
   try {
     res.json(await getOverviewReport())
   } catch (error) {
@@ -73,7 +135,7 @@ router.get('/reports/overview', async (req, res, next) => {
   }
 })
 
-router.get('/reports/engagement', async (req, res, next) => {
+router.get('/reports/engagement', requireStaffPermission(PERMISSIONS.VIEW_REPORTS), async (req, res, next) => {
   try {
     res.json(await getEngagementReport())
   } catch (error) {
@@ -81,7 +143,7 @@ router.get('/reports/engagement', async (req, res, next) => {
   }
 })
 
-router.get('/reports/pods', async (req, res, next) => {
+router.get('/reports/pods', requireStaffPermission(PERMISSIONS.VIEW_REPORTS), async (req, res, next) => {
   try {
     res.json(await getPodsReport())
   } catch (error) {
@@ -89,7 +151,7 @@ router.get('/reports/pods', async (req, res, next) => {
   }
 })
 
-router.get('/reports/reliability', async (req, res, next) => {
+router.get('/reports/reliability', requireStaffPermission(PERMISSIONS.VIEW_REPORTS), async (req, res, next) => {
   try {
     const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20))
     res.json(await getReliabilityReport({ limit }))
@@ -98,7 +160,7 @@ router.get('/reports/reliability', async (req, res, next) => {
   }
 })
 
-router.get('/reports/courses', async (req, res, next) => {
+router.get('/reports/courses', requireStaffPermission(PERMISSIONS.VIEW_REPORTS), async (req, res, next) => {
   try {
     res.json(await getCoursesReport())
   } catch (error) {
@@ -106,7 +168,7 @@ router.get('/reports/courses', async (req, res, next) => {
   }
 })
 
-router.get('/reports/activity', async (req, res, next) => {
+router.get('/reports/activity', requireStaffPermission(PERMISSIONS.VIEW_REPORTS), async (req, res, next) => {
   try {
     const days = Number(req.query.days) || 30
     res.json(await getActivityReport({ days }))
@@ -115,7 +177,7 @@ router.get('/reports/activity', async (req, res, next) => {
   }
 })
 
-router.get('/cohorts', async (req, res, next) => {
+router.get('/cohorts', requireStaffPermission(PERMISSIONS.MANAGE_COHORTS, PERMISSIONS.VIEW_REPORTS), async (req, res, next) => {
   try {
     let cohorts = await Cohort.find().sort({ created_at: -1 }).lean()
 
@@ -176,7 +238,7 @@ router.get('/cohorts', async (req, res, next) => {
   }
 })
 
-router.post('/cohorts', async (req, res, next) => {
+router.post('/cohorts', requireStaffPermission(PERMISSIONS.MANAGE_COHORTS), async (req, res, next) => {
   try {
     const { name, term } = req.body ?? {}
     if (!name?.trim()) {
@@ -216,7 +278,8 @@ router.post('/users', requireAdminOnly, async (req, res, next) => {
       password,
       firstName,
       lastName,
-      role = 'instructor',
+      role: rawRole = 'instructor',
+      staffRole: rawStaffRole,
       university = 'Ghana Communication Technology University (GCTU)',
       program = 'Staff',
       level = '400',
@@ -228,8 +291,17 @@ router.post('/users', requireAdminOnly, async (req, res, next) => {
       throw validationError('email, password, firstName, and lastName are required')
     }
 
-    if (!['instructor', 'admin'].includes(role)) {
-      throw validationError('role must be instructor or admin')
+    const mapped = mapStaffRoleToAccount(rawStaffRole)
+    let role = rawRole
+    let staffRole = null
+    if (mapped) {
+      role = mapped.role
+      staffRole = mapped.staffRole
+    } else if (['instructor', 'admin'].includes(rawRole)) {
+      role = rawRole
+      staffRole = rawRole === 'admin' ? 'super_admin' : 'instructor'
+    } else {
+      throw validationError('role must be instructor or admin, or provide a valid staffRole')
     }
 
     if (password.length < 8) {
@@ -263,6 +335,7 @@ router.post('/users', requireAdminOnly, async (req, res, next) => {
       program,
       level: String(level),
       role,
+      staff_role: staffRole,
       created_at: now,
       updated_at: now,
     })
@@ -281,6 +354,7 @@ router.post('/users', requireAdminOnly, async (req, res, next) => {
       email: normalizedEmail,
       name: `${firstName.trim()} ${lastName.trim()}`,
       role,
+      staffRole,
       studentId: staffStudentId,
       createdAt: now,
     })
@@ -289,7 +363,7 @@ router.post('/users', requireAdminOnly, async (req, res, next) => {
   }
 })
 
-router.get('/groups', async (req, res, next) => {
+router.get('/groups', requireStaffPermission(PERMISSIONS.MANAGE_GROUPS, PERMISSIONS.VIEW_REPORTS), async (req, res, next) => {
   try {
     const match = {}
     if (req.query.cohortId) match.cohort_id = String(req.query.cohortId)
@@ -339,6 +413,7 @@ router.get('/groups', async (req, res, next) => {
           const atRisk = reliability.score !== null && reliability.score < 60
           const avatarUrl = avatarUrlForUser(m.user_id, profileByUserId[m.user_id])
 
+          const role = normalizeMemberRole(m.role)
           return {
             id: m.user_id,
             name: u ? `${u.first_name} ${u.last_name}`.trim() : 'Unknown',
@@ -347,6 +422,8 @@ router.get('/groups', async (req, res, next) => {
             level: u?.level,
             initials: m.initials,
             joinedAt: m.joined_at,
+            role,
+            isLeader: role === 'leader',
             reliability,
             atRisk,
             avatarUrl,
@@ -354,6 +431,8 @@ router.get('/groups', async (req, res, next) => {
         })
 
         const atRiskCount = members.filter((m) => m.atRisk).length
+        const leaderId = members.find((m) => m.isLeader)?.id ?? null
+        const { progress } = await computeGroupProgress(g.id)
 
         return {
           id: g.id,
@@ -363,6 +442,8 @@ router.get('/groups', async (req, res, next) => {
           courseNumber: g.course_number,
           memberCount: g.member_count,
           atRiskCount,
+          leaderId,
+          progress,
           members,
           cohortId: g.cohort_id,
           createdAt: g.created_at,
@@ -376,7 +457,7 @@ router.get('/groups', async (req, res, next) => {
   }
 })
 
-router.get('/groups/:groupId', async (req, res, next) => {
+router.get('/groups/:groupId', requireStaffPermission(PERMISSIONS.MANAGE_GROUPS, PERMISSIONS.VIEW_REPORTS), async (req, res, next) => {
   try {
     const group = await StudyGroup.findOne({
       $or: [{ id: req.params.groupId }, { slug: req.params.groupId }],
@@ -436,6 +517,7 @@ router.get('/groups/:groupId', async (req, res, next) => {
         },
       )
       const avatarUrl = avatarUrlForUser(m.user_id, profileByUserId[m.user_id])
+      const role = normalizeMemberRole(m.role)
       return {
         id: m.user_id,
         name: u ? `${u.first_name} ${u.last_name}`.trim() : 'Unknown',
@@ -444,11 +526,16 @@ router.get('/groups/:groupId', async (req, res, next) => {
         level: u?.level,
         joinedAt: m.joined_at,
         initials: m.initials,
+        role,
+        isLeader: role === 'leader',
         reliability,
         atRisk: reliability.score !== null && reliability.score < 60,
         avatarUrl,
       }
     })
+
+    const leaderId = leaderIdFromMembers(members)
+    const { progress } = await computeGroupProgress(group.id)
 
     res.json({
       id: group.id,
@@ -458,6 +545,8 @@ router.get('/groups/:groupId', async (req, res, next) => {
       courseNumber: group.course_number,
       cohortId: group.cohort_id,
       createdAt: group.created_at,
+      leaderId,
+      progress,
       atRiskCount: formattedMembers.filter((m) => m.atRisk).length,
       members: formattedMembers,
       stats: {
@@ -472,7 +561,29 @@ router.get('/groups/:groupId', async (req, res, next) => {
   }
 })
 
-router.get('/students', async (req, res, next) => {
+async function adminAssignLeader(req, res, next) {
+  try {
+    const group = await resolveGroupByIdOrSlug(req.params.groupId)
+    const targetUserId = req.body?.userId ?? req.body?.user_id
+    await setGroupLeader(group.id, targetUserId)
+    res.json(await formatLeaderTransferResponse(group))
+  } catch (error) {
+    next(error)
+  }
+}
+
+router.put(
+  '/groups/:groupId/leader',
+  requireStaffPermission(PERMISSIONS.ASSIGN_LEADERS),
+  adminAssignLeader,
+)
+router.patch(
+  '/groups/:groupId/leader',
+  requireStaffPermission(PERMISSIONS.ASSIGN_LEADERS),
+  adminAssignLeader,
+)
+
+router.get('/students', requireStaffPermission(PERMISSIONS.VIEW_STUDENTS), async (req, res, next) => {
   try {
     const page = Math.max(1, Number(req.query.page) || 1)
     const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20))
@@ -587,7 +698,7 @@ router.get('/students', async (req, res, next) => {
   }
 })
 
-router.get('/students/:userId', async (req, res, next) => {
+router.get('/students/:userId', requireStaffPermission(PERMISSIONS.VIEW_STUDENTS), async (req, res, next) => {
   try {
     const user = await User.findOne({ id: req.params.userId, role: 'student' }).lean()
     if (!user) {

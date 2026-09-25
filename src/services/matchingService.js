@@ -297,6 +297,7 @@ export async function getGroupMembers(groupId) {
       user_id: m.user_id,
       initials: m.initials,
       avatar_color: m.avatar_color,
+      role: m.role,
       first_name: u?.first_name,
       last_name: u?.last_name,
       program: u?.program,
@@ -315,6 +316,7 @@ export async function buildMatchPayload(group, userId) {
       user_id: m.user_id,
       initials: m.initials,
       avatar_color: m.avatar_color,
+      role: m.role,
       first_name: m.first_name,
       last_name: m.last_name,
       program: m.program,
@@ -325,11 +327,13 @@ export async function buildMatchPayload(group, userId) {
   })
 
   const metrics = await computeMatchMetrics(userId, group.id, null)
+  const leaderId = members.find((m) => m.isLeader)?.id ?? null
 
   return {
     groupId: group.slug,
     groupTitle: group.title,
     courseLabel: formatCourseLabel(group.subject, group.course_number),
+    leaderId,
     members,
     metrics,
   }
@@ -371,9 +375,11 @@ async function addMemberToGroup(groupId, user) {
   const existing = await GroupMember.findOne({ group_id: groupId, user_id: user.id }).lean()
   if (existing) return
 
+  const memberCount = await GroupMember.countDocuments({ group_id: groupId })
   await GroupMember.create({
     group_id: groupId,
     user_id: user.id,
+    role: memberCount === 0 ? 'leader' : 'member',
     joined_at: new Date().toISOString(),
     initials: getInitials(user.first_name, user.last_name),
     avatar_color: pickAvatarColor(user.id),

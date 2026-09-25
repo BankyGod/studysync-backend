@@ -217,10 +217,19 @@ Each student may include `avatarUrl` (signed URL; image bytes stored in Mongo `u
 
 **Student detail** → profile, onboarding, courses, groups, reliability, `avatarUrl`  
 
-**Pods list** → `{ groups: [{ id, groupId, title, members[], atRiskCount, ... }] }`  
-Members include `avatarUrl` when a photo exists.  
+**Pods list** → `{ groups: [{ id, groupId, title, leaderId, progress, members[], atRiskCount, ... }] }`  
+Members include `avatarUrl`, `role` (`member`|`leader`), `isLeader`.  
 
-**Pod detail** → members + `stats` (tasks / messages / files)
+**Pod detail** → members + `leaderId` + `progress` + `stats` (tasks / messages / files)
+
+**Assign leader** → `PUT` or `PATCH /admin/groups/:groupId/leader` `{ "userId" }` (permission: `assign_leaders`)
+
+**Reports bundle** → `GET /admin/reports`  
+**Task progress** → `GET /admin/task-progress` `{ summary, items[] }`
+
+### Staff roles (`staff_role` / `staffRole`)
+
+`super_admin`, `instructor`, `cohort_manager`, `student_officer`, `reports_viewer` — returned on auth payloads. Portal gate remains `role: instructor|admin`.
 
 ### Profile photos (students)
 

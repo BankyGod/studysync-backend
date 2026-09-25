@@ -23,6 +23,8 @@ import {
 } from '../../services/taskNotifications.js'
 import { getUserDisplayName } from '../../services/notificationService.js'
 
+import { isGroupLeader } from '../../services/groupLeaderService.js'
+
 const router = Router({ mergeParams: true })
 
 router.use(authRequired, requireGroupMember)
@@ -82,16 +84,28 @@ function groupTasksByStatus(rows) {
   return result
 }
 
-function canDeleteTask(task, userId) {
+function canDeleteTask(task, userId, isLeader = false) {
+  if (isLeader) return true
   return Boolean(task.creator_id) && task.creator_id === userId
 }
 
-function canEditTaskMetadata(task, userId) {
+function canEditTaskMetadata(task, userId, isLeader = false) {
+  if (isLeader) return true
   return Boolean(task.creator_id) && task.creator_id === userId
 }
 
-function assertForwardOrCreatorMove(existing, nextStatus, userId) {
+function canApproveRegress(task, userId, isLeader = false) {
+  if (isLeader) return true
+  return Boolean(task.creator_id) && task.creator_id === userId
+}
+
+async function callerIsGroupLeader(req) {
+  return isGroupLeader(req.group.id, req.user.id)
+}
+
+function assertForwardOrCreatorMove(existing, nextStatus, userId, isLeader = false) {
   if (!isBackwardStatusMove(existing.status, nextStatus)) return
+  if (isLeader) return
   if (existing.creator_id && existing.creator_id !== userId) {
     throw regressRequiresApproval('Moving this task backward requires approval from the task creator.', {
       taskId: existing.id,
@@ -198,6 +212,7 @@ router.put('/reorder', async (req, res, next) => {
 
     const existingTasks = await Task.find({ group_id: req.group.id }).lean()
     const existingById = Object.fromEntries(existingTasks.map((task) => [task.id, task]))
+    const isLeader = await callerIsGroupLeader(req)
 
     for (const item of tasks) {
       const existing = existingById[item.id]
@@ -205,7 +220,7 @@ router.put('/reorder', async (req, res, next) => {
         throw notFound(`Task not found: ${item.id}`)
       }
       if (item.status && item.status !== existing.status) {
-        assertForwardOrCreatorMove(existing, item.status, req.user.id)
+        assertForwardOrCreatorMove(existing, item.status, req.user.id, isLeader)
       }
     }
 
@@ -354,8 +369,8 @@ router.post('/:taskId/regress-requests', async (req, res, next) => {
       throw validationError('Regress requests are only needed when moving a task to an earlier column')
     }
 
-    if (existing.creator_id === req.user.id) {
-      throw validationError('Task creators can move tasks backward directly')
+    if (existing.creator_id === req.user.id || (await callerIsGroupLeader(req))) {
+      throw validationError('Task creators and leaders can move tasks backward directly')
     }
 
     const result = await createRegressRequest(req, existing, targetStatus)
@@ -371,8 +386,8 @@ router.post('/:taskId/regress-requests/:requestId/approve', async (req, res, nex
     if (!existing) {
       throw notFound('Task not found')
     }
-    if (existing.creator_id !== req.user.id) {
-      throw forbidden('Only the task creator can approve regress requests')
+    if (!canApproveRegress(existing, req.user.id, await callerIsGroupLeader(req))) {
+      throw forbidden('Only the task creator or group leader can approve regress requests')
     }
 
     const regressRequest = await TaskRegressRequest.findOne({
@@ -427,8 +442,8 @@ router.post('/:taskId/regress-requests/:requestId/reject', async (req, res, next
     if (!existing) {
       throw notFound('Task not found')
     }
-    if (existing.creator_id !== req.user.id) {
-      throw forbidden('Only the task creator can reject regress requests')
+    if (!canApproveRegress(existing, req.user.id, await callerIsGroupLeader(req))) {
+      throw forbidden('Only the task creator or group leader can reject regress requests')
     }
 
     const regressRequest = await TaskRegressRequest.findOne({
@@ -478,10 +493,11 @@ router.patch('/:taskId', async (req, res, next) => {
     }
 
     const { title, dueDate, assigneeId, status, variant, position } = req.body ?? {}
+    const isLeader = await callerIsGroupLeader(req)
     const isMetadataEdit = title !== undefined || dueDate !== undefined || assigneeId !== undefined
 
-    if (isMetadataEdit && !canEditTaskMetadata(existing, req.user.id)) {
-      throw forbidden('Only the task creator can edit title, due date, or assignee')
+    if (isMetadataEdit && !canEditTaskMetadata(existing, req.user.id, isLeader)) {
+      throw forbidden('Only the task creator or group leader can edit title, due date, or assignee')
     }
 
     if (title !== undefined && !title?.trim()) {
@@ -497,7 +513,7 @@ router.patch('/:taskId', async (req, res, next) => {
     }
 
     if (status !== undefined) {
-      assertForwardOrCreatorMove(existing, status, req.user.id)
+      assertForwardOrCreatorMove(existing, status, req.user.id, isLeader)
       const nextVariant =
         variant ??
         (status === 'completed' ? 'completed' : existing.variant === 'completed' ? 'default' : existing.variant)
@@ -552,8 +568,8 @@ router.delete('/:taskId', async (req, res, next) => {
       throw notFound('Task not found')
     }
 
-    if (!canDeleteTask(existing, req.user.id)) {
-      throw forbidden('Only the task creator can delete this task')
+    if (!canDeleteTask(existing, req.user.id, await callerIsGroupLeader(req))) {
+      throw forbidden('Only the task creator or group leader can delete this task')
     }
 
     await Task.deleteOne({ id: req.params.taskId, group_id: req.group.id })

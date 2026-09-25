@@ -3,6 +3,8 @@ import { config } from '../config.js'
 import { User, StudyGroup, GroupMember, UserProfile } from '../db/models.js'
 import { unauthorized, forbidden, notFound } from '../utils/errors.js'
 import { formatUserWithAvatar, requestAbsoluteBase } from '../utils/profileAvatar.js'
+import { userHasAnyPermission } from '../services/staffPermissions.js'
+
 
 export function signToken(userId) {
   return jwt.sign({ sub: userId }, config.jwtSecret, { expiresIn: config.jwtExpiresIn })
@@ -51,6 +53,21 @@ export function requireRole(...roles) {
   }
 }
 
+/** Require at least one of the given staff permissions (based on staff_role). */
+export function requireStaffPermission(...permissions) {
+  return (req, res, next) => {
+    if (!req.user || !['admin', 'instructor'].includes(req.user.role)) {
+      next(forbidden('Staff access required'))
+      return
+    }
+    if (!userHasAnyPermission(req.user, ...permissions)) {
+      next(forbidden('Insufficient staff permissions'))
+      return
+    }
+    next()
+  }
+}
+
 export async function getGroupBySlug(slug) {
   return StudyGroup.findOne({ slug }).lean()
 }
@@ -65,12 +82,13 @@ export async function requireGroupMember(req, res, next) {
 
     const membership = await GroupMember.findOne({ group_id: group.id, user_id: req.user.id }).lean()
 
-    if (!membership && req.user.role !== 'instructor') {
+    if (!membership && !['instructor', 'admin'].includes(req.user.role)) {
       next(forbidden('You are not a member of this workspace'))
       return
     }
 
     req.group = group
+    req.membership = membership || null
     next()
   } catch (error) {
     next(error)

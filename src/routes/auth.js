@@ -5,6 +5,7 @@ import { User, UserProfile } from '../db/models.js'
 import { authRequired, signToken } from '../middleware/auth.js'
 import { conflict, validationError, unauthorized } from '../utils/errors.js'
 import { formatUserWithAvatar, requestAbsoluteBase } from '../utils/profileAvatar.js'
+import { mapStaffRoleToAccount } from '../services/staffPermissions.js'
 
 const router = Router()
 
@@ -19,6 +20,7 @@ function normalizeRegisterBody(body = {}) {
     program: body.program,
     level: body.level != null ? String(body.level) : undefined,
     role: body.role,
+    staffRole: body.staffRole ?? body.staff_role,
     password: body.password,
   }
 }
@@ -35,6 +37,7 @@ router.post('/register', async (req, res, next) => {
       program,
       level,
       role,
+      staffRole,
       password,
     } = normalizeRegisterBody(req.body)
 
@@ -46,8 +49,17 @@ router.post('/register', async (req, res, next) => {
       throw validationError('Invalid academic level')
     }
 
-    if (!['student', 'instructor'].includes(role)) {
+    const staffMapping = mapStaffRoleToAccount(staffRole)
+    let accountRole = role
+    let accountStaffRole = null
+
+    if (staffMapping) {
+      accountRole = staffMapping.role
+      accountStaffRole = staffMapping.staffRole
+    } else if (!['student', 'instructor'].includes(role)) {
       throw validationError('Invalid role')
+    } else if (role === 'instructor') {
+      accountStaffRole = 'instructor'
     }
 
     if (password.length < 8) {
@@ -79,7 +91,8 @@ router.post('/register', async (req, res, next) => {
       university,
       program,
       level,
-      role,
+      role: accountRole,
+      staff_role: accountStaffRole,
       created_at: now,
       updated_at: now,
     })

@@ -3,6 +3,7 @@ import fs from 'fs'
 import { UserProfile } from '../db/models.js'
 import { config } from '../config.js'
 import { pickAvatarColor } from './helpers.js'
+import { resolveStaffRole } from '../services/staffPermissions.js'
 
 const AVATAR_URL_TTL_SEC = 30 * 24 * 60 * 60
 
@@ -135,12 +136,14 @@ export function readAvatarBytes(profile) {
 export async function formatUserWithAvatar(user, options = {}) {
   const profile = await loadAvatarProfile(user.id)
   const avatarUrl = avatarUrlForUser(user.id, profile, options)
+  const staffRole = resolveStaffRole(user)
 
   return {
     id: user.id,
     name: `${user.first_name} ${user.last_name}`.trim(),
     email: user.email,
     role: user.role,
+    ...(staffRole ? { staffRole } : {}),
     studentId: user.student_id,
     university: user.university,
     program: user.program,

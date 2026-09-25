@@ -354,6 +354,7 @@ router.get('/me/groups', async (req, res, next) => {
             user_id: m.user_id,
             initials: m.initials,
             avatar_color: m.avatar_color,
+            role: m.role,
             first_name: u?.first_name,
             last_name: u?.last_name,
             program: u?.program,
@@ -375,12 +376,14 @@ router.get('/me/groups', async (req, res, next) => {
         const total = taskStats[0]?.total ?? 0
         const completed = taskStats[0]?.completed ?? 0
         const progress = total === 0 ? 0 : Math.round((completed / total) * 100)
+        const leaderId = members.find((m) => m.role === 'leader')?.user_id ?? null
 
         return {
           id: group.id,
           groupId: group.slug,
           title: group.title,
           progress,
+          leaderId,
           accent: pickGroupAccent(group.slug),
           members: formattedMembers,
         }

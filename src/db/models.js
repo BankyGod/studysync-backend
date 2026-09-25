@@ -13,6 +13,11 @@ const userSchema = new mongoose.Schema(
     program: { type: String, required: true },
     level: { type: String, enum: ['100', '200', '300', '400'], required: true },
     role: { type: String, enum: ['student', 'instructor', 'admin'], required: true },
+    staff_role: {
+      type: String,
+      enum: ['super_admin', 'cohort_manager', 'student_officer', 'reports_viewer', 'instructor'],
+      default: null,
+    },
     created_at: { type: String, required: true },
     updated_at: { type: String, required: true },
   },
@@ -86,6 +91,7 @@ const groupMemberSchema = new mongoose.Schema(
   {
     group_id: { type: String, required: true },
     user_id: { type: String, required: true },
+    role: { type: String, enum: ['member', 'leader'], default: 'member' },
     joined_at: { type: String, required: true },
     initials: { type: String, required: true },
     avatar_color: { type: String, required: true },
