@@ -242,6 +242,27 @@ Members include `avatarUrl`, `role` (`member`|`leader`), `isLeader`.
 
 **Leader enforcement:** regress approve/reject, session write, call end → leader only. Task edit/delete/reassign → leader (any) or creator (own). Sessions GET + call leave → any member.
 
+**Step approval (pods with a leader)** — only the leader changes a task's column directly.
+- `POST /workspaces/:groupId/tasks/:taskId/progress` `{ action: "start"|"complete" }` by the assignee (non-leader) → `202` task with `pendingAdvanceRequest { id, fromStatus, targetStatus, requestedAt, requestedBy }`, `reviewStatus: "pending"`; leader gets `task.review_requested`. A second request → `409 ADVANCE_ALREADY_PENDING`. Leader calls move immediately.
+- `POST /workspaces/:groupId/tasks/:taskId/review` `{ decision: "approved"|"changes_requested", note? }` (leader only; note ≤ 500). Approve moves the task and sets `startedAt`/`completedAt`; decline keeps the column and stores `reviewNote`. Assignee gets `task.review_approved` / `task.changes_requested`. No request → `409 TASK_NOT_AWAITING_REVIEW`.
+- Non-leader forward move via PATCH or reorder → `409 ADVANCE_REQUIRES_APPROVAL`; backward → `409 REGRESS_REQUIRES_APPROVAL`. A leader move clears any waiting request.
+- Pods with no leader: the assignee still moves tasks directly, and anyone who can edit a task may set due date / priority.
+
+**Task fields** — every task returns `status`, `priority` (`low|medium|high|null`), `pendingAdvanceRequest`, `reviewStatus`, `reviewNote`, `reviewedAt`, `reviewedBy { id, name }`, `startedAt`, `lastActivityAt`, `activity[] { id, type, at, actor { id, name }, note? }` (latest 50). `lastActivityAt` is bumped by every real action except nudges.
+
+**Document tasks** — `taskType: "standard"|"document"` (default `standard`; set on create, leader-only change → `403`). Every task returns `submissions[] { id, fileId, fileName, fileSize, fileType, uploadedAt, uploadedBy { id, name } }`.
+- `POST /workspaces/:groupId/tasks/:taskId/submissions` (multipart `file`, ≤ 10 MB): assignee only (`403`), document task, `in_progress`, no waiting request (else `409 TASK_NOT_ACCEPTING_UPLOADS`). Saved as a pod file with `source: "task"`, `taskId`, `taskTitle` (listed in `GET .../files`); adds a `document_uploaded` entry; emits `file:uploaded` + `task:updated`; `201` task. New versions allowed.
+- Moving a document task to Done without a file (progress complete, reorder, PATCH, leader approval) → `409 TASK_DOCUMENT_REQUIRED`.
+- Deleting a pod file that is a submission removes it from the task.
+
+**Due date / priority** — leader only in pods with a leader: ignored on create by others, `403` on change.
+
+**Nudges** — `POST /workspaces/:groupId/nudges` `{ userId, taskId?, message? }` (leader only, message ≤ 300) → `201 { ok: true }`; target gets `task.nudge`; adds a `nudged` activity entry. One per leader → member → task per hour → `429 NUDGE_RATE_LIMITED { retryAt }`.
+
+**Announcement** — `GET /workspaces/:groupId` includes `announcement { text, updatedAt, author { id, name } } | null`. `PUT /workspaces/:groupId/announcement` `{ text }` (≤ 500, leader only) → `{ announcement }`, other members get `announcement.updated`. `DELETE` → `204` (leader only).
+
+**Realtime** — `task:updated` after every task change (including review, nudge, regress); `workspace:updated` after announcement changes, leader transfer, member removal, and leaving. Notifications now include `data { groupId, taskId, ... }` and dotted types (`task.assigned`, `task.review_requested`, ...).
+
 **Leader leaving** → `DELETE|POST /matching/groups/:groupId/leave` returns `409 { code: "LEADER_MUST_TRANSFER" }` while other members remain; the leader must transfer first. A sole leader may leave.
 
 **My tasks** → `GET /users/me/tasks?status=&groupId=` → `{ tasks: [{ id, title, status, groupId, groupTitle, dueDate, startedAt, completedAt, assignee, createdBy, pendingRegressRequest }] }` (assigned to caller across all pods, due date first)

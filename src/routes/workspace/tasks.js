@@ -1,7 +1,8 @@
 import { Router } from 'express'
 import { v4 as uuid } from 'uuid'
 import mongoose from 'mongoose'
-import { Task, TaskRegressRequest, TASK_PRIORITIES } from '../../db/models.js'
+import fs from 'fs'
+import { StoredFile, Task, TaskRegressRequest, TASK_PRIORITIES, TASK_TYPES } from '../../db/models.js'
 import { fetchTaskRows } from '../../db/taskQueries.js'
 import { authRequired, requireGroupMember } from '../../middleware/auth.js'
 import {
@@ -13,9 +14,19 @@ import {
   advanceRequiresApproval,
   advanceAlreadyPending,
   taskNotAwaitingReview,
+  taskNotAcceptingUploads,
+  taskDocumentRequired,
 } from '../../utils/errors.js'
-import { pickAvatarColor } from '../../utils/helpers.js'
-import { normalizeAvatarColor } from '../../utils/profileAvatar.js'
+import { formatTask, groupTasksByStatus } from '../../services/taskFormatter.js'
+import { createUploadRateLimiter } from '../../middleware/uploadRateLimit.js'
+import {
+  formatFileEntry,
+  newFileId,
+  normalizeMimeType,
+  sanitizeFileName,
+  validateSharedUpload,
+} from '../../services/workspaceFileService.js'
+import { podFileUpload } from './files.js'
 import {
   STATUS_RANK,
   buildProgressUpdates,
@@ -47,91 +58,7 @@ const router = Router({ mergeParams: true })
 router.use(authRequired, requireGroupMember)
 
 const REVIEW_NOTE_MAX = 500
-
-function actorRef(id, names) {
-  return id ? { id, name: names?.[id] ?? 'Unknown' } : null
-}
-
-export function formatTask(row) {
-  const names = row.user_names ?? {}
-  const task = {
-    id: row.id,
-    title: row.title,
-    status: row.status,
-    variant: row.variant,
-    createdAt: row.created_at,
-    priority: row.priority ?? null,
-    startedAt: row.started_at ?? null,
-    lastActivityAt: row.last_activity_at ?? row.completed_at ?? row.started_at ?? row.created_at,
-    reviewStatus: row.review_status ?? null,
-    reviewNote: row.review_note ?? null,
-    reviewedAt: row.reviewed_at ?? null,
-    reviewedBy: actorRef(row.reviewed_by_id, names),
-    pendingAdvanceRequest: null,
-    activity: (row.activity ?? []).map((entry) => ({
-      id: entry.id,
-      type: entry.type,
-      at: entry.at,
-      actor: actorRef(entry.actor_id, names),
-      ...(entry.note ? { note: entry.note } : {}),
-    })),
-  }
-  if (row.due_date) task.dueDate = row.due_date
-  if (row.completed_at) task.completedAt = row.completed_at
-  if (row.creator_id) {
-    task.createdBy = {
-      id: row.creator_id,
-      initials:
-        row.creator_initials ??
-        (row.creator_name
-          ? row.creator_name
-              .split(/\s+/)
-              .map((part) => part[0]?.toUpperCase() ?? '')
-              .join('')
-              .slice(0, 2) || '??'
-          : '??'),
-      name: row.creator_name || 'Unknown',
-      color: normalizeAvatarColor(row.creator_color ?? pickAvatarColor(row.creator_id), row.creator_id),
-    }
-  }
-  if (row.assignee_id) {
-    task.assignee = {
-      id: row.assignee_id,
-      initials: row.initials,
-      name: row.assignee_name,
-      color: normalizeAvatarColor(row.avatar_color, row.assignee_id),
-    }
-  }
-  const advance = row.pending_advance_request
-  if (advance) {
-    task.pendingAdvanceRequest = {
-      id: advance.id,
-      fromStatus: advance.from_status,
-      targetStatus: advance.target_status,
-      requestedAt: advance.requested_at,
-      requestedBy: actorRef(advance.requested_by_id, names),
-    }
-  }
-  const pending = row.pending_regress_request
-  if (pending) {
-    task.pendingRegressRequest = {
-      requestId: pending.id,
-      requesterId: pending.requester_id,
-      fromStatus: pending.from_status,
-      targetStatus: pending.target_status,
-      createdAt: pending.created_at,
-    }
-  }
-  return task
-}
-
-function groupTasksByStatus(rows) {
-  const result = { todo: [], in_progress: [], completed: [] }
-  rows.forEach((row) => {
-    result[row.status].push(formatTask(row))
-  })
-  return result
-}
+const submissionRateLimit = createUploadRateLimiter({ maxUploads: 20 })
 
 function isOwnTask(task, userId) {
   return Boolean(task.creator_id) && task.creator_id === userId
@@ -171,6 +98,22 @@ function assertStatusMoveAllowed(existing, nextStatus, ctx) {
 function clearedAdvanceFields(existing) {
   if (!existing.pending_advance_request) return {}
   return { pending_advance_request: null, review_status: null }
+}
+
+/** Document tasks cannot reach Done without at least one uploaded file. */
+function assertDocumentReady(task, targetStatus, taskType = task.task_type) {
+  if (targetStatus !== 'completed' || taskType !== 'document') return
+  if (task.submissions?.length) return
+  throw taskDocumentRequired(undefined, { taskId: task.id })
+}
+
+function normalizeTaskType(value) {
+  if (value === undefined) return undefined
+  const normalized = String(value ?? '').trim().toLowerCase() || 'standard'
+  if (!TASK_TYPES.includes(normalized)) {
+    throw validationError(`taskType must be one of ${TASK_TYPES.join(', ')}`)
+  }
+  return normalized
 }
 
 function normalizePriority(value) {
@@ -279,6 +222,7 @@ router.put('/reorder', async (req, res, next) => {
         throw notFound(`Task not found: ${item.id}`)
       }
       assertStatusMoveAllowed(existing, item.status, ctx)
+      if (item.status !== existing.status) assertDocumentReady(existing, item.status)
     }
 
     session.startTransaction()
@@ -341,6 +285,7 @@ router.post('/', async (req, res, next) => {
     const ctx = await leaderContext(req)
     const canSetSchedule = ctx.isLeader || !ctx.hasLeader
     const priority = canSetSchedule ? normalizePriority(req.body?.priority) ?? null : null
+    const taskType = normalizeTaskType(req.body?.taskType) ?? 'standard'
 
     const position = await nextPositionInColumn(req.group.id, 'todo')
     const taskId = uuid()
@@ -358,6 +303,7 @@ router.post('/', async (req, res, next) => {
       variant: 'default',
       due_date: canSetSchedule ? dueDate || null : null,
       priority,
+      task_type: taskType,
       assignee_id: assigneeId || null,
       position,
       last_activity_at: now,
@@ -405,6 +351,7 @@ router.post('/:taskId/progress', async (req, res, next) => {
         throw forbidden('Only the assignee or the group leader can update task progress')
       }
     }
+    assertDocumentReady(existing, targetStatus)
 
     if (ctx.hasLeader && !ctx.isLeader) {
       if (existing.pending_advance_request) {
@@ -515,6 +462,7 @@ router.post('/:taskId/review', async (req, res, next) => {
     let set = reviewFields
     if (approved) {
       const target = request.target_status
+      assertDocumentReady(existing, target)
       const statusUpdates = buildStatusUpdates(target, existing)
       if (!statusUpdates.started_at) statusUpdates.started_at = now
       set = {
@@ -554,6 +502,94 @@ router.post('/:taskId/review', async (req, res, next) => {
     next(error)
   }
 })
+
+function assertAcceptsUploads(task, userId) {
+  if (task.assignee_id !== userId) {
+    throw forbidden('Only the assignee can upload documents for this task')
+  }
+  const details = { taskId: task.id }
+  if ((task.task_type ?? 'standard') !== 'document') {
+    throw taskNotAcceptingUploads('This task does not take document uploads.', details)
+  }
+  if (task.status !== 'in_progress') {
+    throw taskNotAcceptingUploads('Documents can only be uploaded while the task is in progress.', details)
+  }
+  if (task.pending_advance_request) {
+    throw taskNotAcceptingUploads('This task is waiting for the leader’s decision.', details)
+  }
+}
+
+function removeUploadedFile(req) {
+  if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path)
+}
+
+router.post(
+  '/:taskId/submissions',
+  submissionRateLimit,
+  async (req, res, next) => {
+    try {
+      assertAcceptsUploads(await findTask(req), req.user.id)
+      next()
+    } catch (error) {
+      next(error)
+    }
+  },
+  podFileUpload.single('file'),
+  async (req, res, next) => {
+    try {
+      const uploadError = validateSharedUpload(req.file)
+      if (uploadError) throw validationError(uploadError)
+
+      const existing = await findTask(req)
+      assertAcceptsUploads(existing, req.user.id)
+
+      const fileId = req.pendingUploadFileId ?? newFileId()
+      const fileName = sanitizeFileName(req.file.originalname)
+      const fileType = normalizeMimeType(req.file.mimetype) || req.file.mimetype
+      const now = new Date().toISOString()
+
+      const stored = {
+        id: fileId,
+        group_id: req.group.id,
+        uploaded_by_id: req.user.id,
+        file_name: fileName,
+        file_size: req.file.size,
+        file_type: fileType,
+        storage_key: req.file.path,
+        source: 'task',
+        purpose: 'shared',
+        task_id: existing.id,
+        task_title: existing.title,
+        uploaded_at: now,
+      }
+      await StoredFile.create(stored)
+
+      const update = buildTaskUpdate({}, [activityEntry('document_uploaded', req.user.id, fileName, now)])
+      update.$push.submissions = {
+        id: uuid(),
+        file_id: fileId,
+        file_name: fileName,
+        file_size: req.file.size,
+        file_type: fileType,
+        uploaded_at: now,
+        uploaded_by_id: req.user.id,
+      }
+      await Task.updateOne({ id: existing.id }, update)
+
+      const io = req.app.get('io')
+      const file = formatFileEntry(stored, req.group.slug, `${req.user.first_name} ${req.user.last_name}`.trim())
+      io?.to(`workspace:${req.group.slug}`).emit('file:new', { groupId: req.group.slug, file })
+      io?.to(`workspace:${req.group.slug}`).emit('file:uploaded', { groupId: req.group.slug, file })
+
+      const task = await loadFormattedTask(req, existing.id)
+      broadcastTask(req, task)
+      res.status(201).json(task)
+    } catch (error) {
+      removeUploadedFile(req)
+      next(error)
+    }
+  },
+)
 
 router.post('/:taskId/regress-requests', async (req, res, next) => {
   try {
@@ -697,8 +733,15 @@ router.patch('/:taskId', async (req, res, next) => {
       throw forbidden('Only the group leader can set due dates and priority.')
     }
 
+    const taskType = normalizeTaskType(req.body?.taskType)
+    const currentTaskType = existing.task_type ?? 'standard'
+    const taskTypeChanged = taskType !== undefined && taskType !== currentTaskType
+    if (taskTypeChanged && ctx.hasLeader && !ctx.isLeader) {
+      throw forbidden('Only the group leader can change the task type.')
+    }
+
     const isMetadataEdit =
-      title !== undefined || dueDateChanged || priorityChanged || assigneeId !== undefined
+      title !== undefined || dueDateChanged || priorityChanged || taskTypeChanged || assigneeId !== undefined
     if (isMetadataEdit && !ctx.isLeader && !isOwnTask(existing, req.user.id)) {
       throw forbidden('Only the task creator or group leader can edit title, due date, priority, or assignee')
     }
@@ -712,6 +755,7 @@ router.patch('/:taskId', async (req, res, next) => {
       title: title !== undefined ? title.trim() : existing.title,
       due_date: dueDate !== undefined ? dueDate || null : existing.due_date,
       priority: priority !== undefined ? priority : existing.priority ?? null,
+      task_type: taskType ?? currentTaskType,
       assignee_id: assigneeId !== undefined ? assigneeId || null : existing.assignee_id,
       position: position ?? existing.position,
     }
@@ -722,6 +766,7 @@ router.patch('/:taskId', async (req, res, next) => {
 
     if (moved) {
       assertStatusMoveAllowed(existing, status, ctx)
+      assertDocumentReady(existing, status, set.task_type)
       const nextVariant =
         variant ??
         (status === 'completed' ? 'completed' : existing.variant === 'completed' ? 'default' : existing.variant)
@@ -735,7 +780,7 @@ router.patch('/:taskId', async (req, res, next) => {
     if (set.assignee_id !== previousAssigneeId) {
       entries.push(activityEntry('assigned', req.user.id, null, now))
     }
-    if ((title !== undefined && set.title !== existing.title) || dueDateChanged || priorityChanged) {
+    if ((title !== undefined && set.title !== existing.title) || dueDateChanged || priorityChanged || taskTypeChanged) {
       entries.push(activityEntry('updated', req.user.id, null, now))
     }
 

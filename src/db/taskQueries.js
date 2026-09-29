@@ -4,6 +4,7 @@ import { getInitials, pickAvatarColor } from '../utils/helpers.js'
 function taskUserIds(task) {
   const ids = [task.assignee_id, task.creator_id, task.reviewed_by_id, task.pending_advance_request?.requested_by_id]
   for (const entry of task.activity ?? []) ids.push(entry.actor_id)
+  for (const submission of task.submissions ?? []) ids.push(submission.uploaded_by_id)
   return ids.filter(Boolean)
 }
 

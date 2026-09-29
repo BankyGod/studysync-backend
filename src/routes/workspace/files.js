@@ -4,7 +4,9 @@ import { Router } from 'express'
 import multer from 'multer'
 import mongoose from 'mongoose'
 import { v4 as uuid } from 'uuid'
-import { StoredFile, User } from '../../db/models.js'
+import { StoredFile, Task, User } from '../../db/models.js'
+import { fetchTaskRows } from '../../db/taskQueries.js'
+import { formatTask } from '../../services/taskFormatter.js'
 import { config } from '../../config.js'
 import { authRequired, requireGroupMember } from '../../middleware/auth.js'
 import { createUploadRateLimiter } from '../../middleware/uploadRateLimit.js'
@@ -24,7 +26,7 @@ import {
 const router = Router({ mergeParams: true })
 const uploadRateLimit = createUploadRateLimiter({ maxUploads: 20 })
 
-const upload = multer({
+export const podFileUpload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => {
       const dir = podFilesDir(config.uploadsDir, req.group.slug)
@@ -77,7 +79,7 @@ router.get('/', async (req, res, next) => {
   }
 })
 
-router.post('/', uploadRateLimit, upload.single('file'), async (req, res, next) => {
+router.post('/', uploadRateLimit, podFileUpload.single('file'), async (req, res, next) => {
   try {
     const validationErrorMessage = validateSharedUpload(req.file)
     if (validationErrorMessage) {
@@ -178,6 +180,23 @@ router.delete('/:fileId', async (req, res, next) => {
       groupId: req.group.slug,
       fileId: file.id,
     })
+
+    const affectedTasks = await Task.find(
+      { group_id: req.group.id, 'submissions.file_id': file.id },
+      { id: 1 },
+    ).lean()
+    if (affectedTasks.length) {
+      await Task.updateMany(
+        { group_id: req.group.id, 'submissions.file_id': file.id },
+        { $pull: { submissions: { file_id: file.id } } },
+      )
+      for (const { id } of affectedTasks) {
+        const row = (await fetchTaskRows(req.group.id, id))[0]
+        if (row) {
+          io?.to(`workspace:${req.group.slug}`).emit('task:updated', { groupId: req.group.slug, task: formatTask(row) })
+        }
+      }
+    }
 
     res.status(204).send()
   } catch (error) {

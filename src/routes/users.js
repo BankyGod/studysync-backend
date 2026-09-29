@@ -23,7 +23,7 @@ import {
 } from '../utils/profileAvatar.js'
 import notificationsRouter from './notifications.js'
 import { fetchTaskRows } from '../db/taskQueries.js'
-import { formatTask } from './workspace/tasks.js'
+import { formatTask } from '../services/taskFormatter.js'
 
 const router = Router()
 const MAX_AVATAR_SIZE = 5 * 1024 * 1024

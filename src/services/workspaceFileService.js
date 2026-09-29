@@ -170,7 +170,7 @@ export function normalizeFileSource(row) {
 
 export function isListableSharedFile(row) {
   const source = normalizeFileSource(row)
-  if (source === 'chat' || source === 'files') return true
+  if (source === 'chat' || source === 'files' || source === 'task') return true
   // Legacy rows saved before source field existed
   return row.purpose === 'shared' || row.purpose === 'chat_attachment'
 }
@@ -189,6 +189,7 @@ export function formatFileEntry(row, groupSlug, uploaderName) {
     uploadedById: row.uploaded_by_id,
     uploadedAt: row.uploaded_at,
     source: normalizeFileSource(row),
+    ...(row.task_id ? { taskId: row.task_id, taskTitle: row.task_title ?? null } : {}),
     downloadUrl: downloadUrl(groupSlug, row.id),
   }
 }

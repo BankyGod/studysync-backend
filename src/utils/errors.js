@@ -55,6 +55,17 @@ export function taskNotAwaitingReview(message = 'This task has no step waiting f
   return new AppError(409, 'TASK_NOT_AWAITING_REVIEW', message)
 }
 
+export function taskNotAcceptingUploads(message, details = null) {
+  return new AppError(409, 'TASK_NOT_ACCEPTING_UPLOADS', message, details)
+}
+
+export function taskDocumentRequired(
+  message = 'Upload the document before this task can be marked done.',
+  details = null,
+) {
+  return new AppError(409, 'TASK_DOCUMENT_REQUIRED', message, details)
+}
+
 export function nudgeRateLimited(message = 'You already reminded this member about this in the last hour.', details = null) {
   return new AppError(429, 'NUDGE_RATE_LIMITED', message, details)
 }

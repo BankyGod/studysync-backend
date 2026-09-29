@@ -6,7 +6,7 @@ import { notFound, nudgeRateLimited, validationError } from '../../utils/errors.
 import { getUserDisplayName } from '../../services/notificationService.js'
 import { notifyAnnouncementUpdated, notifyNudge } from '../../services/taskNotifications.js'
 import { activityEntry, saveTaskChange } from '../../services/taskActivity.js'
-import { formatTask } from './tasks.js'
+import { formatTask } from '../../services/taskFormatter.js'
 import { authRequired, requireGroupMember } from '../../middleware/auth.js'
 import { formatMember } from '../../utils/serializers.js'
 import { formatCourseLabel } from '../../utils/helpers.js'

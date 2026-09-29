@@ -13,8 +13,10 @@ export const TASK_ACTIVITY_TYPES = [
   'approved',
   'changes_requested',
   'nudged',
+  'document_uploaded',
   'regress_requested',
 ]
+export const TASK_TYPES = ['standard', 'document']
 
 const userSchema = new mongoose.Schema(
   {
@@ -143,6 +145,24 @@ const taskSchema = new mongoose.Schema(
     assignee_id: { type: String, default: null },
     position: { type: Number, default: 0 },
     priority: { type: String, enum: ['low', 'medium', 'high', null], default: null },
+    task_type: { type: String, enum: TASK_TYPES, default: 'standard' },
+    submissions: {
+      type: [
+        new mongoose.Schema(
+          {
+            id: { type: String, required: true },
+            file_id: { type: String, required: true },
+            file_name: { type: String, required: true },
+            file_size: { type: Number, required: true },
+            file_type: { type: String, required: true },
+            uploaded_at: { type: String, required: true },
+            uploaded_by_id: { type: String, required: true },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
     pending_advance_request: {
       type: new mongoose.Schema(
         {
@@ -263,8 +283,10 @@ const storedFileSchema = new mongoose.Schema(
     file_size: { type: Number, required: true },
     file_type: { type: String, required: true },
     storage_key: { type: String, required: true },
-    source: { type: String, enum: ['chat', 'files'], default: null },
+    source: { type: String, enum: ['chat', 'files', 'task'], default: null },
     purpose: { type: String, enum: ['shared', 'chat_attachment', 'voice'], default: null },
+    task_id: { type: String, default: null },
+    task_title: { type: String, default: null },
     uploaded_at: { type: String, required: true },
   },
   { collection: 'stored_files', versionKey: false },
