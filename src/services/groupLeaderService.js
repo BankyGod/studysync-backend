@@ -105,10 +105,14 @@ export async function removeGroupMember(groupId, targetUserId, { actorId } = {})
 }
 
 /** Workspace transfer: caller must be current leader. */
-export async function assertCallerIsLeader(groupId, callerId) {
+export async function assertCallerIsLeader(
+  groupId,
+  callerId,
+  message = 'Only the current group leader can transfer leadership',
+) {
   const ok = await isGroupLeader(groupId, callerId)
   if (!ok) {
-    throw forbidden('Only the current group leader can transfer leadership')
+    throw forbidden(message)
   }
 }
 

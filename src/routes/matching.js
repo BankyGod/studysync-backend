@@ -105,6 +105,10 @@ router.post('/groups/:groupId/join', async (req, res, next) => {
 async function handleLeave(req, res, next) {
   try {
     const result = await leaveGroup(req.user.id, req.params.groupId)
+    req.app.get('io')?.to(`workspace:${result.groupId}`).emit('workspace:updated', {
+      groupId: result.groupId,
+      removedUserId: req.user.id,
+    })
     res.json(result)
   } catch (error) {
     next(error)

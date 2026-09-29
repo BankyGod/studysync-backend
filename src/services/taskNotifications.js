@@ -158,6 +158,85 @@ export async function notifyTaskDeleted(io, { group, task, actorId, assigneeId }
   })
 }
 
+export async function notifyReviewRequested(io, { group, task, requesterId, leaderId, targetStatus }) {
+  if (!leaderId || leaderId === requesterId) return
+
+  const requesterName = await getUserDisplayName(requesterId)
+  const step = targetStatus === 'completed' ? 'mark as done' : 'start'
+  await createNotification(io, {
+    userId: leaderId,
+    type: 'task.review_requested',
+    title: 'Step needs your approval',
+    message: `${requesterName} wants to ${step} "${task.title}" in ${group.title}.`,
+    groupId: group.id,
+    groupSlug: group.slug,
+    taskId: task.id,
+    actorId: requesterId,
+    metadata: {
+      taskTitle: task.title,
+      targetStatus,
+      from: { id: requesterId, name: requesterName },
+    },
+  })
+}
+
+export async function notifyReviewDecision(io, { group, task, leaderId, recipientId, approved, note }) {
+  if (!recipientId || recipientId === leaderId) return
+
+  const leaderName = await getUserDisplayName(leaderId)
+  await createNotification(io, {
+    userId: recipientId,
+    type: approved ? 'task.review_approved' : 'task.changes_requested',
+    title: approved ? 'Step approved' : 'Step declined',
+    message: approved
+      ? `${leaderName} approved your step on "${task.title}".`
+      : `${leaderName} declined your step on "${task.title}"${note ? `: ${note}` : '.'}`,
+    groupId: group.id,
+    groupSlug: group.slug,
+    taskId: task.id,
+    actorId: leaderId,
+    metadata: approved ? { taskTitle: task.title } : { taskTitle: task.title, note: note || null },
+  })
+}
+
+export async function notifyNudge(io, { group, leaderId, userId, task = null, message }) {
+  const leaderName = await getUserDisplayName(leaderId)
+  const text = message || (task ? `Reminder about "${task.title}".` : 'Reminder from your pod leader.')
+  await createNotification(io, {
+    userId,
+    type: 'task.nudge',
+    title: `Reminder from ${leaderName}`,
+    message: text,
+    groupId: group.id,
+    groupSlug: group.slug,
+    taskId: task?.id ?? null,
+    actorId: leaderId,
+    metadata: {
+      taskTitle: task?.title ?? null,
+      message: message || '',
+      from: { id: leaderId, name: leaderName },
+    },
+  })
+}
+
+export async function notifyAnnouncementUpdated(io, { group, leaderId, text }) {
+  const memberIds = await getGroupMemberUserIds(group.id)
+  const leaderName = await getUserDisplayName(leaderId)
+  await createNotifications(
+    io,
+    memberIds.filter((id) => id !== leaderId),
+    {
+      type: 'announcement.updated',
+      title: 'New pod announcement',
+      message: `${leaderName}: ${text.length > 140 ? `${text.slice(0, 137)}...` : text}`,
+      groupId: group.id,
+      groupSlug: group.slug,
+      actorId: leaderId,
+      metadata: { text },
+    },
+  )
+}
+
 // Legacy aliases
 export const notifyMoveBackRequested = notifyRegressRequested
 export const notifyMoveBackApproved = notifyRegressApproved

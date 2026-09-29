@@ -141,6 +141,10 @@ router.delete('/:sessionId', async (req, res, next) => {
       throw notFound('Session not found')
     }
 
+    req.app.get('io')?.to(`workspace:${req.group.slug}`).emit('session:deleted', {
+      groupId: req.group.slug,
+      id: req.params.sessionId,
+    })
     res.status(204).send()
   } catch (error) {
     next(error)

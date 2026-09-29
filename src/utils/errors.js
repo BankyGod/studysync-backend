@@ -42,3 +42,19 @@ export function moveBackApprovalRequired(message, details = null) {
 export function regressRequiresApproval(message, details = null) {
   return new AppError(409, 'REGRESS_REQUIRES_APPROVAL', message, details)
 }
+
+export function advanceRequiresApproval(message, details = null) {
+  return new AppError(409, 'ADVANCE_REQUIRES_APPROVAL', message, details)
+}
+
+export function advanceAlreadyPending(message = 'This task is already waiting for the leader’s approval.', details = null) {
+  return new AppError(409, 'ADVANCE_ALREADY_PENDING', message, details)
+}
+
+export function taskNotAwaitingReview(message = 'This task has no step waiting for approval.') {
+  return new AppError(409, 'TASK_NOT_AWAITING_REVIEW', message)
+}
+
+export function nudgeRateLimited(message = 'You already reminded this member about this in the last hour.', details = null) {
+  return new AppError(429, 'NUDGE_RATE_LIMITED', message, details)
+}

@@ -1,10 +1,19 @@
 import { v4 as uuid } from 'uuid'
 import { Notification, GroupMember, User } from '../db/models.js'
 
+function formatNotificationType(type) {
+  return String(type ?? '').replace(/^task_/, 'task.')
+}
+
 function formatNotification(doc) {
   return {
     id: doc.id,
-    type: doc.type,
+    type: formatNotificationType(doc.type),
+    data: {
+      groupId: doc.group_slug ?? null,
+      taskId: doc.task_id ?? null,
+      ...(doc.metadata ?? {}),
+    },
     title: doc.title,
     message: doc.message,
     groupId: doc.group_slug,

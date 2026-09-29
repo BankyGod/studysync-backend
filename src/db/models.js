@@ -1,5 +1,21 @@
 import mongoose from 'mongoose'
 
+export const TASK_STATUSES = ['todo', 'in_progress', 'completed']
+export const TASK_PRIORITIES = ['low', 'medium', 'high']
+export const TASK_ACTIVITY_TYPES = [
+  'created',
+  'assigned',
+  'updated',
+  'started',
+  'completed',
+  'start_requested',
+  'completion_requested',
+  'approved',
+  'changes_requested',
+  'nudged',
+  'regress_requested',
+]
+
 const userSchema = new mongoose.Schema(
   {
     id: { type: String, required: true, unique: true },
@@ -82,6 +98,17 @@ const studyGroupSchema = new mongoose.Schema(
     subject: { type: String, required: true },
     course_number: { type: String, required: true },
     cohort_id: { type: String, default: null },
+    announcement: {
+      type: new mongoose.Schema(
+        {
+          text: { type: String, required: true },
+          updated_at: { type: String, required: true },
+          author_id: { type: String, required: true },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
     created_at: { type: String, required: true },
   },
   { collection: 'study_groups', versionKey: false },
@@ -115,11 +142,59 @@ const taskSchema = new mongoose.Schema(
     started_at: { type: String, default: null },
     assignee_id: { type: String, default: null },
     position: { type: Number, default: 0 },
+    priority: { type: String, enum: ['low', 'medium', 'high', null], default: null },
+    pending_advance_request: {
+      type: new mongoose.Schema(
+        {
+          id: { type: String, required: true },
+          from_status: { type: String, enum: TASK_STATUSES, required: true },
+          target_status: { type: String, enum: TASK_STATUSES, required: true },
+          requested_at: { type: String, required: true },
+          requested_by_id: { type: String, required: true },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
+    review_status: { type: String, enum: ['pending', 'approved', 'changes_requested', null], default: null },
+    review_note: { type: String, default: null },
+    reviewed_at: { type: String, default: null },
+    reviewed_by_id: { type: String, default: null },
+    last_activity_at: { type: String, default: null },
+    activity: {
+      type: [
+        new mongoose.Schema(
+          {
+            id: { type: String, required: true },
+            type: { type: String, enum: TASK_ACTIVITY_TYPES, required: true },
+            at: { type: String, required: true },
+            actor_id: { type: String, default: null },
+            note: { type: String, default: null },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
     created_at: { type: String, required: true },
   },
   { collection: 'tasks', versionKey: false },
 )
 taskSchema.index({ group_id: 1, status: 1 })
+
+const nudgeSchema = new mongoose.Schema(
+  {
+    id: { type: String, required: true, unique: true },
+    group_id: { type: String, required: true },
+    leader_id: { type: String, required: true },
+    user_id: { type: String, required: true },
+    task_id: { type: String, default: null },
+    message: { type: String, default: '' },
+    created_at: { type: String, required: true },
+  },
+  { collection: 'nudges', versionKey: false },
+)
+nudgeSchema.index({ leader_id: 1, user_id: 1, task_id: 1, created_at: -1 })
 
 const taskMoveRequestSchema = new mongoose.Schema(
   {
@@ -156,6 +231,11 @@ const notificationSchema = new mongoose.Schema(
         'task_move_back_approved',
         'task_move_back_denied',
         'task_deleted',
+        'task.review_requested',
+        'task.review_approved',
+        'task.changes_requested',
+        'task.nudge',
+        'announcement.updated',
       ],
       required: true,
     },
@@ -279,3 +359,4 @@ export const Message = mongoose.model('Message', messageSchema)
 export const VideoCall = mongoose.model('VideoCall', videoCallSchema)
 export const ScheduledSession = mongoose.model('ScheduledSession', scheduledSessionSchema)
 export const MatchingJob = mongoose.model('MatchingJob', matchingJobSchema)
+export const Nudge = mongoose.model('Nudge', nudgeSchema)
