@@ -17,6 +17,7 @@ import {
 } from '../utils/helpers.js'
 import { loadProfile } from '../routes/onboarding.js'
 import {
+  AppError,
   alreadyInGroup,
   conflict,
   forbidden,
@@ -27,6 +28,8 @@ import {
 import { computeReliabilityBatch, formatReliability } from './reliabilityService.js'
 import { formatMember } from '../utils/serializers.js'
 import { avatarUrlForUser } from '../utils/profileAvatar.js'
+import { normalizeMemberRole } from './groupLeaderService.js'
+import { isDemoOrSeedUser, realStudentMatch } from './adminReportService.js'
 
 const MATCHING_STEPS = ['course', 'preferences', 'compatibility', 'searching', 'finalizing']
 const STEP_PROGRESS = [20, 40, 65, 85, 100]
@@ -444,10 +447,24 @@ export async function leaveGroup(userId, groupSlug) {
     throw notFound('Study group not found')
   }
 
-  const result = await GroupMember.deleteOne({ group_id: group.id, user_id: userId })
-  if (result.deletedCount === 0) {
+  const membership = await GroupMember.findOne({ group_id: group.id, user_id: userId }).lean()
+  if (!membership) {
     throw notFound('You are not a member of this group')
   }
+
+  if (normalizeMemberRole(membership.role) === 'leader') {
+    const others = await GroupMember.countDocuments({ group_id: group.id, user_id: { $ne: userId } })
+    if (others > 0) {
+      throw new AppError(
+        409,
+        'LEADER_MUST_TRANSFER',
+        'Transfer leadership to another member before leaving the pod.',
+        { groupId: group.slug, remainingMembers: others },
+      )
+    }
+  }
+
+  await GroupMember.deleteOne({ group_id: group.id, user_id: userId })
 
   return {
     groupId: group.slug,
@@ -607,6 +624,142 @@ export async function listCourseGroups(courseCode) {
 
   // No pods yet — still allow empty list for a well-formed course code
   return []
+}
+
+const batchJobs = new Map()
+const MAX_BATCH_JOBS = 100
+
+function rememberBatchJob(job) {
+  batchJobs.set(job.jobId, job)
+  if (batchJobs.size > MAX_BATCH_JOBS) {
+    batchJobs.delete(batchJobs.keys().next().value)
+  }
+}
+
+export function getBatchMatchingJob(jobId) {
+  const job = batchJobs.get(jobId)
+  if (!job) throw notFound('Matching job not found')
+  return job
+}
+
+async function resolveBatchCourses({ cohortId, courseCode }) {
+  if (courseCode) {
+    const slug = String(courseCode).trim().toLowerCase()
+    const courseNumber = slug.split('-').filter(Boolean).pop()
+    const [enrollments, pods] = await Promise.all([
+      UserCourse.find({ course_number: new RegExp(`^${escapeRegex(courseNumber)}$`, 'i') }).lean(),
+      StudyGroup.find({ course_number: new RegExp(`^${escapeRegex(courseNumber)}$`, 'i') }).lean(),
+    ])
+    const match = [...enrollments, ...pods].find(
+      (row) => courseBaseSlug(row.subject, row.course_number) === slug,
+    )
+    if (!match) throw notFound(`No enrolments or pods found for course ${courseCode}`)
+    return [{ subject: match.subject.trim(), courseNumber: match.course_number.trim() }]
+  }
+
+  const pods = await StudyGroup.find({ cohort_id: cohortId }).lean()
+  const seen = new Map()
+  for (const pod of pods) {
+    const key = courseBaseSlug(pod.subject, pod.course_number)
+    if (!seen.has(key)) seen.set(key, { subject: pod.subject.trim(), courseNumber: pod.course_number.trim() })
+  }
+  return [...seen.values()]
+}
+
+async function batchMatchCourse({ subject, courseNumber, cohortId }) {
+  const coursePods = await findGroupsForCourse(subject, courseNumber)
+  const podIds = coursePods.map((g) => g.id)
+  const [enrollments, existingMembers] = await Promise.all([
+    UserCourse.find({
+      subject: new RegExp(`^${escapeRegex(subject)}$`, 'i'),
+      course_number: new RegExp(`^${escapeRegex(courseNumber)}$`, 'i'),
+    }).lean(),
+    podIds.length ? GroupMember.find({ group_id: { $in: podIds } }).lean() : [],
+  ])
+
+  const alreadyPlaced = new Set(existingMembers.map((m) => m.user_id))
+  const candidateIds = [...new Set(enrollments.map((e) => e.user_id))].filter((id) => !alreadyPlaced.has(id))
+  if (!candidateIds.length) return { groupsCreated: 0, studentsMatched: 0 }
+
+  const users = await User.find(realStudentMatch({ id: { $in: candidateIds } })).lean()
+  const students = users
+    .filter((u) => !isDemoOrSeedUser(u))
+    .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))
+
+  const memberCounts = new Map(podIds.map((id) => [id, 0]))
+  existingMembers.forEach((m) => memberCounts.set(m.group_id, (memberCounts.get(m.group_id) ?? 0) + 1))
+
+  const eligiblePods = coursePods.filter((g) => !cohortId || g.cohort_id === cohortId)
+  let podNumber = nextPodNumber(coursePods.map((g) => ({ podNumber: extractPodNumber(g) })))
+  let groupsCreated = 0
+  let studentsMatched = 0
+
+  for (const student of students) {
+    let pod = eligiblePods.find((g) => (memberCounts.get(g.id) ?? 0) < DEFAULT_POD_CAPACITY)
+    if (!pod) {
+      pod = await createNumberedPodRecord(subject, courseNumber, podNumber)
+      podNumber += 1
+      if (cohortId && pod.cohort_id !== cohortId) {
+        await StudyGroup.updateOne({ id: pod.id }, { $set: { cohort_id: cohortId } })
+        pod = { ...pod, cohort_id: cohortId }
+      }
+      if (!memberCounts.has(pod.id)) {
+        memberCounts.set(pod.id, await GroupMember.countDocuments({ group_id: pod.id }))
+        eligiblePods.push(pod)
+        groupsCreated += 1
+      }
+    }
+
+    await addMemberToGroup(pod.id, student)
+    memberCounts.set(pod.id, (memberCounts.get(pod.id) ?? 0) + 1)
+    studentsMatched += 1
+  }
+
+  return { groupsCreated, studentsMatched }
+}
+
+/**
+ * Admin batch matching — places every unmatched, enrolled (non-demo) student
+ * into an open pod for the course, creating numbered pods as needed.
+ */
+export async function runBatchMatching({ cohortId, courseCode, requestedBy } = {}) {
+  if (!cohortId && !courseCode) {
+    throw validationError('cohortId or courseCode is required')
+  }
+
+  const job = {
+    jobId: uuid(),
+    status: 'running',
+    cohortId: cohortId ?? null,
+    courseCode: courseCode ?? null,
+    requestedBy: requestedBy ?? null,
+    groupsCreated: 0,
+    studentsMatched: 0,
+    courses: [],
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+    error: null,
+  }
+  rememberBatchJob(job)
+
+  try {
+    const courses = await resolveBatchCourses({ cohortId, courseCode })
+    for (const course of courses) {
+      const result = await batchMatchCourse({ ...course, cohortId })
+      job.courses.push({ courseCode: courseBaseSlug(course.subject, course.courseNumber), ...result })
+      job.groupsCreated += result.groupsCreated
+      job.studentsMatched += result.studentsMatched
+    }
+    job.status = 'completed'
+  } catch (error) {
+    job.status = 'failed'
+    job.error = error?.message ?? 'Batch matching failed'
+    throw error
+  } finally {
+    job.completedAt = new Date().toISOString()
+  }
+
+  return job
 }
 
 export async function usersShareGroup(userIdA, userIdB) {

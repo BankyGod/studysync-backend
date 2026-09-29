@@ -206,7 +206,20 @@ POST /admin/cohorts
 }
 ```
 
-`role` must be `instructor` or `admin`.
+`role` must be `instructor` or `admin` (or send `staffRole` instead). Permission: `manage_staff`.
+
+## Staff management (`manage_staff` — super admin)
+
+- `GET /admin/users?scope=staff` → `{ users: [{ id, name, email, role, staffRole, avatarUrl, createdAt }] }`
+- `PATCH /admin/users/:userId` `{ "staffRole": "cohort_manager" }` → `{ user }`. `role` is derived (`admin` only for `super_admin`). Changing your own role → `403`; non-staff target → `400`.
+
+## Batch matching (`manage_groups`)
+
+- `POST /admin/matching/run` `{ cohortId?, courseCode? }` (at least one) → `202 { jobId, status, groupsCreated, studentsMatched, courses[] }`
+  - Places every enrolled, unmatched, non-demo student into an open pod for the course (capacity = default pod size), creating numbered pods as needed. First member of a new pod becomes leader.
+  - `courseCode` (e.g. `computer-science-401`) targets one course. `cohortId` alone targets the courses of that cohort's pods; with a cohort, only that cohort's pods are filled and new pods are tagged with it.
+  - Runs synchronously, so `status` is already `completed` (or the request errors).
+- `GET /admin/matching/jobs/:jobId` → same job object (in-memory; lost on server restart)
 
 ---
 
@@ -229,8 +242,15 @@ Members include `avatarUrl`, `role` (`member`|`leader`), `isLeader`.
 
 **Leader enforcement:** regress approve/reject, session write, call end → leader only. Task edit/delete/reassign → leader (any) or creator (own). Sessions GET + call leave → any member.
 
-**Reports bundle** → `GET /admin/reports`  
-**Task progress** → `GET /admin/task-progress` `{ summary, items[] }`
+**Leader leaving** → `DELETE|POST /matching/groups/:groupId/leave` returns `409 { code: "LEADER_MUST_TRANSFER" }` while other members remain; the leader must transfer first. A sole leader may leave.
+
+**My tasks** → `GET /users/me/tasks?status=&groupId=` → `{ tasks: [{ id, title, status, groupId, groupTitle, dueDate, startedAt, completedAt, assignee, createdBy, pendingRegressRequest }] }` (assigned to caller across all pods, due date first)
+
+## Reports
+
+- `GET /admin/reports` — full bundle: `summary`, `cohorts[]`, `groups[]` (with `leader`, `progress`, `course`, `cohortName`), `students[]`, `taskProgress[]`
+- Demo/seed students (`@studysync.local`, etc.) are excluded from counts and lists
+- `GET /admin/task-progress` — per-pod assigned-task completion
 
 ### Staff roles (`staff_role` / `staffRole`)
 

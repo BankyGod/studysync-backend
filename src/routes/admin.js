@@ -24,6 +24,9 @@ import {
   getReliabilityReport,
   getCoursesReport,
   getActivityReport,
+  getAdminReportBundle,
+  realStudentMatch,
+  isDemoOrSeedUser,
 } from '../services/adminReportService.js'
 import { getTaskProgressReport, computeGroupProgress } from '../services/groupProgressService.js'
 import {
@@ -38,18 +41,11 @@ import {
   PERMISSIONS,
   resolveStaffRole,
 } from '../services/staffPermissions.js'
+import { getBatchMatchingJob, runBatchMatching } from '../services/matchingService.js'
 
 const router = Router()
 
 router.use(authRequired, requireRole('admin', 'instructor'))
-
-function requireAdminOnly(req, res, next) {
-  if (req.user.role !== 'admin' && resolveStaffRole(req.user) !== 'super_admin') {
-    next(forbidden('Only admins can perform this action'))
-    return
-  }
-  next()
-}
 
 router.get(
   '/dashboard',
@@ -83,37 +79,7 @@ router.get(
 
 router.get('/reports', requireStaffPermission(PERMISSIONS.VIEW_REPORTS), async (req, res, next) => {
   try {
-    const [overview, engagement, pods, reliability, courses, activity, taskProgress] =
-      await Promise.all([
-        getOverviewReport(),
-        getEngagementReport(),
-        getPodsReport(),
-        getReliabilityReport(),
-        getCoursesReport(),
-        getActivityReport({ days: 30 }),
-        getTaskProgressReport(),
-      ])
-
-    res.json({
-      generatedAt: new Date().toISOString(),
-      summary: {
-        students: overview.students,
-        pods: overview.pods,
-        cohorts: overview.cohorts,
-        matched: overview.matched,
-        podsWithoutLeader: taskProgress.summary.podsWithoutLeader,
-        avgProgress: taskProgress.summary.avgProgress,
-      },
-      cohorts: [],
-      groups: pods.pods ?? [],
-      students: [],
-      taskProgress: taskProgress.items,
-      overview,
-      engagement,
-      reliability,
-      courses,
-      activity,
-    })
+    res.json(await getAdminReportBundle())
   } catch (error) {
     next(error)
   }
@@ -271,7 +237,7 @@ router.post('/cohorts', requireStaffPermission(PERMISSIONS.MANAGE_COHORTS), asyn
   }
 })
 
-router.post('/users', requireAdminOnly, async (req, res, next) => {
+router.post('/users', requireStaffPermission(PERMISSIONS.MANAGE_STAFF), async (req, res, next) => {
   try {
     const {
       email,
@@ -363,6 +329,93 @@ router.post('/users', requireAdminOnly, async (req, res, next) => {
   }
 })
 
+function formatStaffUser(user, profile = null) {
+  return {
+    id: user.id,
+    name: `${user.first_name ?? ''} ${user.last_name ?? ''}`.trim(),
+    email: user.email,
+    role: user.role,
+    staffRole: resolveStaffRole(user),
+    avatarUrl: avatarUrlForUser(user.id, profile),
+    createdAt: user.created_at ?? null,
+  }
+}
+
+async function loadProfilesByUserId(userIds) {
+  if (!userIds.length) return {}
+  const profiles = await UserProfile.find({ user_id: { $in: userIds } }).lean()
+  return Object.fromEntries(profiles.map((p) => [p.user_id, p]))
+}
+
+router.get('/users', requireStaffPermission(PERMISSIONS.MANAGE_STAFF), async (req, res, next) => {
+  try {
+    const scope = String(req.query.scope ?? 'staff').toLowerCase()
+    if (scope !== 'staff') {
+      throw validationError('Only scope=staff is supported; use /admin/students for students')
+    }
+    const users = await User.find({ role: { $in: ['instructor', 'admin'] } })
+      .sort({ created_at: 1 })
+      .lean()
+    const profileByUserId = await loadProfilesByUserId(users.map((u) => u.id))
+    res.json({ users: users.map((u) => formatStaffUser(u, profileByUserId[u.id])) })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.patch('/users/:userId', requireStaffPermission(PERMISSIONS.MANAGE_STAFF), async (req, res, next) => {
+  try {
+    const { userId } = req.params
+    if (userId === req.user.id) {
+      throw forbidden('You cannot change your own role')
+    }
+
+    const mapped = mapStaffRoleToAccount(req.body?.staffRole)
+    if (!mapped) {
+      throw validationError('staffRole must be one of super_admin, cohort_manager, student_officer, reports_viewer, instructor')
+    }
+
+    const target = await User.findOne({ id: userId }).lean()
+    if (!target) throw notFound('User not found')
+    if (!['instructor', 'admin'].includes(target.role)) {
+      throw validationError('Only staff accounts can have a staff role')
+    }
+
+    const updated = await User.findOneAndUpdate(
+      { id: userId },
+      { $set: { role: mapped.role, staff_role: mapped.staffRole, updated_at: new Date().toISOString() } },
+      { new: true },
+    ).lean()
+
+    const profileByUserId = await loadProfilesByUserId([updated.id])
+    res.json({ user: formatStaffUser(updated, profileByUserId[updated.id]) })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.post('/matching/run', requireStaffPermission(PERMISSIONS.MANAGE_GROUPS), async (req, res, next) => {
+  try {
+    const cohortId = req.body?.cohortId?.trim?.() || undefined
+    const courseCode = req.body?.courseCode?.trim?.() || undefined
+    if (cohortId && !(await Cohort.exists({ id: cohortId }))) {
+      throw notFound('Cohort not found')
+    }
+    const job = await runBatchMatching({ cohortId, courseCode, requestedBy: req.user.id })
+    res.status(202).json(job)
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.get('/matching/jobs/:jobId', requireStaffPermission(PERMISSIONS.MANAGE_GROUPS), (req, res, next) => {
+  try {
+    res.json(getBatchMatchingJob(req.params.jobId))
+  } catch (error) {
+    next(error)
+  }
+})
+
 router.get('/groups', requireStaffPermission(PERMISSIONS.MANAGE_GROUPS, PERMISSIONS.VIEW_REPORTS), async (req, res, next) => {
   try {
     const match = {}
@@ -386,6 +439,12 @@ router.get('/groups', requireStaffPermission(PERMISSIONS.MANAGE_GROUPS, PERMISSI
       { $sort: { created_at: -1 } },
     ])
 
+    const cohortIds = [...new Set(groups.map((g) => g.cohort_id).filter(Boolean))]
+    const cohorts = cohortIds.length
+      ? await Cohort.find({ id: { $in: cohortIds } }).lean()
+      : []
+    const cohortById = Object.fromEntries(cohorts.map((c) => [c.id, c]))
+
     const allMemberIds = [...new Set(groups.flatMap((g) => g.members.map((m) => m.user_id)))]
     const users = allMemberIds.length
       ? await User.find({ id: { $in: allMemberIds } })
@@ -405,8 +464,10 @@ router.get('/groups', requireStaffPermission(PERMISSIONS.MANAGE_GROUPS, PERMISSI
         const memberIds = g.members.map((m) => m.user_id)
         const reliabilityByUser = await computeReliabilityBatch(memberIds, g.id, g.slug)
 
-        const members = g.members.map((m) => {
+        const members = g.members
+          .map((m) => {
           const u = userById[m.user_id]
+          if (u && isDemoOrSeedUser(u)) return null
           const reliability = formatReliability(
             reliabilityByUser[m.user_id] || { score: null, tasksScored: 0, scope: 'group', groupId: g.slug },
           )
@@ -429,10 +490,12 @@ router.get('/groups', requireStaffPermission(PERMISSIONS.MANAGE_GROUPS, PERMISSI
             avatarUrl,
           }
         })
+          .filter(Boolean)
 
         const atRiskCount = members.filter((m) => m.atRisk).length
         const leaderId = members.find((m) => m.isLeader)?.id ?? null
         const { progress } = await computeGroupProgress(g.id)
+        const cohort = g.cohort_id ? cohortById[g.cohort_id] : null
 
         return {
           id: g.id,
@@ -440,12 +503,14 @@ router.get('/groups', requireStaffPermission(PERMISSIONS.MANAGE_GROUPS, PERMISSI
           title: g.title,
           subject: g.subject,
           courseNumber: g.course_number,
-          memberCount: g.member_count,
+          course: `${g.subject} ${g.course_number}`.trim(),
+          memberCount: members.length,
           atRiskCount,
           leaderId,
           progress,
           members,
           cohortId: g.cohort_id,
+          cohortName: cohort?.name ?? null,
           createdAt: g.created_at,
         }
       }),
@@ -594,7 +659,7 @@ router.get('/students', requireStaffPermission(PERMISSIONS.VIEW_STUDENTS), async
     const onboarding = req.query.onboarding
     const matched = req.query.matched
 
-    const match = { role: 'student' }
+    const match = realStudentMatch()
     if (level) match.level = level
     if (program) match.program = new RegExp(program, 'i')
     if (q) {

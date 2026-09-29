@@ -22,6 +22,8 @@ import {
   verifyAvatarSig,
 } from '../utils/profileAvatar.js'
 import notificationsRouter from './notifications.js'
+import { fetchTaskRows } from '../db/taskQueries.js'
+import { formatTask } from './workspace/tasks.js'
 
 const router = Router()
 const MAX_AVATAR_SIZE = 5 * 1024 * 1024
@@ -391,6 +393,61 @@ router.get('/me/groups', async (req, res, next) => {
     )
 
     res.json({ groups: result })
+  } catch (error) {
+    next(error)
+  }
+})
+
+const TASK_STATUSES = ['todo', 'in_progress', 'completed']
+
+router.get('/me/tasks', async (req, res, next) => {
+  try {
+    const status = req.query.status?.trim() || null
+    const groupFilter = req.query.groupId?.trim() || null
+    if (status && !TASK_STATUSES.includes(status)) {
+      throw validationError(`status must be one of ${TASK_STATUSES.join(', ')}`)
+    }
+
+    const memberships = await GroupMember.find({ user_id: req.user.id }).lean()
+    const groupQuery = { id: { $in: memberships.map((m) => m.group_id) } }
+    if (groupFilter) groupQuery.$or = [{ id: groupFilter }, { slug: groupFilter }]
+    const groups = await StudyGroup.find(groupQuery).lean()
+    if (!groups.length) {
+      res.json({ tasks: [] })
+      return
+    }
+
+    const taskQuery = { group_id: { $in: groups.map((g) => g.id) }, assignee_id: req.user.id }
+    if (status) taskQuery.status = status
+    const groupIdsWithTasks = await Task.distinct('group_id', taskQuery)
+    const groupById = Object.fromEntries(groups.map((g) => [g.id, g]))
+
+    const rowsPerGroup = await Promise.all(groupIdsWithTasks.map((groupId) => fetchTaskRows(groupId)))
+    const tasks = rowsPerGroup
+      .flat()
+      .filter((row) => row.assignee_id === req.user.id && (!status || row.status === status))
+      .map((row) => {
+        const group = groupById[row.group_id]
+        const task = formatTask(row)
+        return {
+          ...task,
+          status: row.status,
+          groupId: group.slug,
+          groupTitle: group.title,
+          dueDate: row.due_date ?? null,
+          startedAt: row.started_at ?? null,
+          completedAt: row.completed_at ?? null,
+          pendingRegressRequest: task.pendingRegressRequest ?? null,
+        }
+      })
+      .sort((a, b) => {
+        if (a.dueDate && b.dueDate) return a.dueDate.localeCompare(b.dueDate)
+        if (a.dueDate) return -1
+        if (b.dueDate) return 1
+        return String(b.createdAt).localeCompare(String(a.createdAt))
+      })
+
+    res.json({ tasks })
   } catch (error) {
     next(error)
   }

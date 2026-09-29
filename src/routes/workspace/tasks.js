@@ -29,7 +29,7 @@ const router = Router({ mergeParams: true })
 
 router.use(authRequired, requireGroupMember)
 
-function formatTask(row) {
+export function formatTask(row) {
   const task = {
     id: row.id,
     title: row.title,
